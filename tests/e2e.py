@@ -53,6 +53,8 @@ try:
             gw_calls.append(json.loads(req.post_data or '{}') if req.url.endswith('/chat') else {'audio': len(req.post_data_buffer or b'')})
             if req.headers.get('x-app-token') != 'secret-123':
                 return route.fulfill(status=401, body='{"error":"unauthorised"}', headers={'access-control-allow-origin': '*'})
+            if req.url.endswith('/research'):
+                return route.fulfill(status=200, body=json.dumps({'text': 'The standard VAT rate in Ghana is 15%.', 'sources': [{'title': 'gra.gov.gh', 'domain': 'gra.gov.gh', 'uri': 'https://gra.gov.gh/vat'}], 'model': 'Gemini 3.8 Flash + Google Search'}), headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
             if req.url.endswith('/transcribe'):
                 return route.fulfill(status=200, body=json.dumps({'text': 'Call the accountant on Monday about the JLn registration.'}), headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
             body = json.loads(req.post_data)
@@ -83,11 +85,11 @@ try:
 
         def t_local_cmds():
             page.goto(URL + '#chat'); page.fill('#chat-c-in', 'task: Open a business bank account'); page.keyboard.press('Enter')
-            page.wait_for_selector('text=Added task')
+            page.wait_for_selector('text=Added to your tasks')
             page.fill('#chat-c-in', 'remember: I prefer formal letters with British spelling'); page.keyboard.press('Enter')
-            page.wait_for_selector('text=Saved to memory as a verified fact')
+            page.wait_for_selector('text=I’ll remember that')
             page.fill('#chat-c-in', 'note: JLn launch ideas — website, logo, first three clients'); page.keyboard.press('Enter')
-            page.wait_for_selector('text=Saved note')
+            page.wait_for_selector('text=Saved to your Vault')
             page.fill('#chat-c-in', 'brief me'); page.keyboard.press('Enter')
             page.wait_for_selector('text=Briefing for')
             expect(page.locator('.msg.assistant').last).to_contain_text('Calendar is not connected')
@@ -163,11 +165,12 @@ try:
             page.click('#pausebtn'); page.wait_for_timeout(400); page.click('#pausebtn'); page.wait_for_timeout(600)
             page.screenshot(path=f'{SHOTS}/06-voice-recording.png')
             page.click('#recbtn'); page.wait_for_selector('#vlist audio', timeout=5000)
-            page.click('[data-vtx]'); page.wait_for_selector('text=Call the accountant on Monday', timeout=5000)
-            assert gw_calls[-1].get('audio', 0) > 0, 'no audio sent'
+            page.wait_for_selector('text=Call the accountant on Monday', timeout=8000)
+            assert gw_calls[-1].get('audio', 0) > 44, 'no audio sent'
             page.click('[data-vedit]'); page.fill('#vt', 'Accountant call'); page.click('#vs'); page.wait_for_selector('text=Accountant call')
             page.fill('#vsearch', 'accountant'); expect(page.locator('#vlist .item:visible')).to_have_count(1)
-        check('Voice: record with waveform, pause/resume, save, transcribe, edit, search', t_voice)
+            page.screenshot(path=f'{SHOTS}/06b-voice-transcribed.png', full_page=True)
+        check('Voice: record, pause/resume, save, AUTO-transcribe via server, edit, search', t_voice)
 
         def t_activity():
             page.goto(URL + '#activity'); expect(page.locator('text=Chain intact')).to_be_visible()
@@ -184,7 +187,7 @@ try:
             page.goto(URL + '#tasks'); page.wait_for_selector('text=Open a business bank account')
             page.goto(URL + '#chat'); page.fill('#chat-c-in', 'Plan tomorrow'); page.keyboard.press('Enter')
             page.wait_for_selector('text=You are offline')
-            page.fill('#chat-c-in', 'task: Buy airtime'); page.keyboard.press('Enter'); page.wait_for_selector('text=Added task')
+            page.fill('#chat-c-in', 'task: Buy airtime'); page.keyboard.press('Enter'); page.wait_for_selector('text=Added to your tasks')
             page.screenshot(path=f'{SHOTS}/07-offline-chat.png', full_page=True)
             ctx.set_offline(False)
         check('Offline: app opens from cache, data available, honest AI status, commands work', t_offline)
@@ -250,6 +253,32 @@ try:
             expect(page.locator('.msg.user')).to_have_count(1)
             ctx.unroute('https://gw.test/**'); ctx.route('https://gw.test/**', gw)
         check('Chat: streaming reply, Markdown (headings, lists, tables, code), model label, regenerate', t_stream_markdown)
+
+        def t_agent_tasks():
+            page.goto(URL + '#chat'); page.click('#newc'); page.wait_for_selector('.welcome'); page.wait_for_timeout(300)
+            page.fill('#chat-c-in', 'remind me to call the accountant tomorrow at 3pm'); page.keyboard.press('Enter')
+            page.wait_for_selector('text=Added to your tasks', timeout=5000)
+            last = page.locator('.msg.assistant').last; expect(last).to_contain_text('Call the accountant'); expect(last).to_contain_text('tomorrow at 3')
+            page.fill('#chat-c-in', 'what are my tasks'); page.keyboard.press('Enter'); page.wait_for_selector('.msg.assistant >> text=Open tasks')
+            page.fill('#chat-c-in', 'mark call the accountant as done'); page.keyboard.press('Enter'); page.wait_for_selector('text=Done: ')
+            page.fill('#chat-c-in', 'Research the latest VAT rate in Ghana'); page.keyboard.press('Enter')
+            page.wait_for_selector('text=The standard VAT rate in Ghana is 15%', timeout=6000)
+            expect(page.locator('.msg.assistant').last.locator('a[href="https://gra.gov.gh/vat"]')).to_have_count(1)
+            page.screenshot(path=f'{SHOTS}/13-agent-tasks.png', full_page=True)
+            # a reminder that is already due fires when the app becomes visible
+            page.evaluate("JLN.Store.put('tasks', {id:'rem1', title:'Send the invoice', due:'2020-01-01', remind_at:'2020-01-01T09:00', priority:2, done:false})")
+            page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+            page.wait_for_selector('.sheet >> text=Send the invoice', timeout=5000); page.click('#rdone'); page.wait_for_timeout(300)
+        check('Agent does tasks with no AI: reminders with date/time, list, complete; web research with sources; reminders fire', t_agent_tasks)
+
+        def t_minutes_connections():
+            page.goto(URL + '#voice'); page.wait_for_selector('[data-vmin]'); page.click('[data-vmin]')
+            page.wait_for_timeout(1500)
+            assert 'meeting minutes' in gw_calls[-1]['messages'][-1]['content'].lower(), 'minutes prompt not sent'
+            page.goto(URL + '#connections'); page.wait_for_selector('[data-conn]'); expect(page.locator('[data-conn]')).to_have_count(6)
+            page.click('[data-conn="2"]'); page.wait_for_selector('.sheet >> text=Meeting minutes'); page.click('.sheet [data-close]')
+            page.screenshot(path=f'{SHOTS}/14-connections.png', full_page=True)
+        check('Meeting minutes from a voice note; Connections screen with honest status', t_minutes_connections)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]
