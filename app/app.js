@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.3.0';
+const VERSION = '0.3.2';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1074,7 +1074,11 @@ async function boot() {
   if (m) { await setSetting('gatewayToken', m[1]); try { history.replaceState(null, '', location.pathname + '#home'); } catch { location.hash = 'home'; } await log('owner', 'device.connected', 'setup link'); setTimeout(() => toast('This device is connected to your AI'), 400); }
   if (!(await Store.all('activity')).length) await log('system', 'app.first_run', 'v' + VERSION);
   route(); detectClaude();
-  if ('serviceWorker' in navigator && !inArtifact && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && !inArtifact && location.protocol !== 'file:') {
+    const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => { reg.update().catch(() => {}); document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); }); }).catch(() => {});
+  }
 }
 window.JLN = { Store, S, sendMessage, routeAgent, parseActions, applyActions, localCommand, draftHash, VERSION };
 boot();
