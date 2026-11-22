@@ -7,6 +7,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, 'app'); SHOTS = os.path.join(ROOT, 'tests', 'screens'); os.makedirs(SHOTS, exist_ok=True)
 URL = 'http://localhost:8765/'
 results = []
+def waitjs(page, expr, timeout=3.0):
+    t=time.time()
+    while time.time()-t < timeout:
+        if page.evaluate(expr): return True
+        time.sleep(0.1)
+    raise AssertionError('timed out waiting for ' + expr)
 PG = [None]
 
 def check(name, fn):
@@ -59,6 +65,7 @@ try:
 
         def t_home():
             expect(page.locator('h1')).to_contain_text('Joshua')
+            assert page.evaluate("document.documentElement.dataset.theme") in ('daylight','graphite'), 'theme not applied'
             expect(page.locator('[data-status]').first).to_contain_text('ONLINE')
             expect(page.locator('#nav a')).to_have_count(9)
             page.screenshot(path=f'{SHOTS}/01-home-empty.png')
@@ -103,7 +110,7 @@ try:
         def t_orchestrator():
             page.goto(URL + '#home'); page.fill('#home-c-in', 'Write a formal letter to my bank asking for the October statement'); page.keyboard.press('Enter')
             page.wait_for_selector('text=Draft awaiting your review', timeout=8000)
-            expect(page.locator('.msg.assistant .tag.accent').last).to_have_text('Writing')
+            expect(page.locator('.msg.assistant .agent-name').last).to_have_text('Writing')
             expect(page.locator('.msg.assistant').last).to_contain_text('groq/test-model')
             sys_prompt = gw_calls[-1]['system']
             assert 'I prefer formal letters with British spelling' in sys_prompt, 'verified memory not sent as context'
@@ -208,6 +215,41 @@ try:
             dp.goto(URL + '#approvals'); dp.wait_for_selector('h2'); dp.screenshot(path=f'{SHOTS}/09-desktop-approvals.png'); dp.close()
             page.goto(URL + '#home'); page.wait_for_selector('h1'); page.screenshot(path=f'{SHOTS}/10-home-filled.png', full_page=True)
         check('Desktop layout and filled Home screenshots', t_desktop)
+
+        def t_themes():
+            page.goto(URL + '#control'); page.wait_for_selector('#appearance')
+            page.click('label.switch:has(#cauto)')
+            page.wait_for_timeout(300); page.click('[data-th="harmattan"]'); waitjs(page, "document.documentElement.dataset.theme === 'harmattan'")
+            page.click('[data-acc="#be185d"]'); waitjs(page, "document.documentElement.style.getPropertyValue('--accent').includes('be185d')")
+            page.click('[data-sz="l"]'); waitjs(page, "document.documentElement.dataset.size === 'l'")
+            page.reload(); page.wait_for_selector('#appearance'); assert page.evaluate("document.documentElement.dataset.theme") == 'harmattan', 'theme not persisted'
+            page.screenshot(path=f'{SHOTS}/11-control-themes.png', full_page=True)
+            for th in ['midnight', 'daylight']:
+                page.click(f'[data-th="{th}"]'); page.wait_for_timeout(250)
+            page.click('[data-acc=""]'); page.click('[data-sz="m"]')
+        check('Themes: 9 palettes, accent, text size, persisted across reload', t_themes)
+
+        def t_stream_markdown():
+            def sse(route):
+                req = route.request
+                if req.method == 'OPTIONS':
+                    return route.fulfill(status=204, headers={'access-control-allow-origin': '*', 'access-control-allow-headers': '*'})
+                body = json.loads(req.post_data); assert body.get('stream') is True and body.get('model'), 'no stream/model sent'
+                chunks = ['## Plan for today\n\n', '1. **Bank** visit at 9:00\n', '2. Call the accountant\n\n', '| Task | Time |\n|---|---|\n| Bank | 9:00 |\n\n', '```\ncode line\n```\n']
+                data = ''.join('data: ' + json.dumps({'model': 'claude-sonnet-5-5', 'choices': [{'delta': {'content': c}}]}) + '\n\n' for c in chunks) + 'data: [DONE]\n\n'
+                route.fulfill(status=200, body=data, headers={'content-type': 'text/event-stream', 'access-control-allow-origin': '*'})
+            ctx.unroute('https://gw.test/**'); ctx.route('https://gw.test/**', sse)
+            page.goto(URL + '#chat'); page.click('#newc'); page.wait_for_selector('.welcome'); page.wait_for_timeout(300); page.fill('#chat-c-in', 'Plan my day please'); page.keyboard.press('Enter')
+            page.wait_for_selector('.msg.assistant .md h2', timeout=8000)
+            last = page.locator('.msg.assistant').last
+            expect(last.locator('ol li')).to_have_count(2); expect(last.locator('table td').first).to_have_text('Bank'); expect(last.locator('pre code')).to_have_text('code line')
+            expect(last).to_contain_text('Claude Sonnet 5.5')
+            expect(last.locator('[data-regen]')).to_have_count(1)
+            page.screenshot(path=f'{SHOTS}/12-chat-markdown.png', full_page=True)
+            last.locator('[data-regen]').click(); page.wait_for_timeout(800)
+            expect(page.locator('.msg.user')).to_have_count(1)
+            ctx.unroute('https://gw.test/**'); ctx.route('https://gw.test/**', gw)
+        check('Chat: streaming reply, Markdown (headings, lists, tables, code), model label, regenerate', t_stream_markdown)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]

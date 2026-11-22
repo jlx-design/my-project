@@ -1,6 +1,6 @@
 /* JLn Evolve service worker: the app shell is cached so the app opens with no network.
    AI and gateway requests are never cached. */
-const CACHE = 'jln-evolve-v0.1.0';
+const CACHE = 'jln-evolve-v0.2.0';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
