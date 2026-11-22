@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -100,7 +100,9 @@ async function sha256(text) {
   catch { let h = 0; for (const c of text) h = (h * 31 + c.charCodeAt(0)) | 0; return 'x' + (h >>> 0).toString(16); }
 }
 let lastHash = null;
-async function log(actor, event, detail = '') {
+let logQueue = Promise.resolve();
+function log(actor, event, detail = '') { const run = logQueue.then(() => logNow(actor, event, detail)).catch(() => {}); logQueue = run; return run; }
+async function logNow(actor, event, detail = '') {
   if (lastHash === null) { const all = await Store.all('activity'); all.sort((a, b) => a.at.localeCompare(b.at)); lastHash = all.length ? all[all.length - 1].hash : 'genesis'; }
   const entry = { id: uid(), actor, event, detail: String(detail).slice(0, 300), at: now(), prev: lastHash };
   entry.hash = await sha256(entry.prev + entry.at + entry.actor + entry.event + entry.detail);
@@ -108,9 +110,9 @@ async function log(actor, event, detail = '') {
 }
 
 /* ---------- settings ---------- */
-const DEFAULTS = { name: 'Joshua', theme: 'auto', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
+const DEFAULTS = { name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
 const S = { ...DEFAULTS };
-async function loadSettings() { const rows = await Store.all('settings'); rows.forEach((r) => { S[r.id] = r.value; }); applyTheme(); }
+async function loadSettings() { const rows = await Store.all('settings'); rows.forEach((r) => { S[r.id] = r.value; }); if (S.theme !== 'auto' && !THEMES.some((t) => t[0] === S.theme)) S.theme = 'daylight'; applyTheme(); }
 async function setSetting(key, value) { S[key] = value; await Store.put('settings', { id: key, value }); if (['theme', 'lightTheme', 'darkTheme', 'accent', 'size'].includes(key)) applyTheme(); }
 const THEMES = [
   ['daylight', 'Daylight', '#f3f5f8', '#ffffff', '#2856f0', 'light'], ['titanium', 'Titanium', '#e4e7eb', '#f4f5f7', '#33597a', 'light'],
