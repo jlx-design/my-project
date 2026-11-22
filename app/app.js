@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.3.3';
+const VERSION = '0.3.4';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
