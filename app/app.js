@@ -210,7 +210,13 @@ const LLM_PREFS = {
   standard: ['Llama-3.2-1B-Instruct-q4f16_1-MLC', 'Llama-3.2-1B-Instruct-q4f32_1-MLC', 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', 'Qwen2.5-1.5B-Instruct-q4f32_1-MLC'],
   lite: ['Qwen2.5-0.5B-Instruct-q4f16_1-MLC', 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC', 'Qwen2-0.5B-Instruct-q4f16_1-MLC', 'Qwen2-0.5B-Instruct-q4f32_1-MLC'],
 };
-const Local = { engine: null, loading: null, modelId: null, lib: null, busy: false };
+const Local = { engine: null, loading: null, modelId: null, lib: null, busy: false, prog: null };
+function paintLocalProgress() {
+  const pr = Local.prog, box = $('#lprog'); if (!pr || !box) return;
+  box.style.display = 'block'; const bar = $('#lbar'); if (bar) bar.style.width = Math.round(pr.p * 100) + '%';
+  const t = $('#ltext'); if (t) t.textContent = `Downloading: ${Math.round(pr.p * 100)}%` + (pr.mb ? ` of about ${pr.mb >= 1000 ? (pr.mb / 1000).toFixed(1) + ' GB' : pr.mb + ' MB'}` : '') + '. Keep the app open.';
+  const b = $('#lbtns'); if (b) b.style.display = 'none';
+}
 async function webgpuInfo() {
   if (window.JLN_LLM_FACTORY) return { ok: true, f16: true };
   if (!('gpu' in navigator)) return { ok: false, why: 'This browser can’t run on-device AI (no WebGPU). On iPhone, update to iOS 26 and open Evolve from Safari or your Home Screen.' };
@@ -255,10 +261,12 @@ async function installLocal(size, ui) {
   const gi = await webgpuInfo(); if (!gi.ok) { ui.error(gi.why); return; }
   let pick; try { pick = await chooseLocalModel(size); } catch { ui.error(Cap.online ? 'Couldn’t reach the model library. Check your connection and try again.' : 'Connect to the internet once to download the on-device AI.'); return; }
   await setSetting('localModel', pick.id); await setSetting('localReady', false); Local.engine = null;
+  Local.prog = { p: 0, mb: size === 'lite' ? 400 : 900 }; paintLocalProgress();
   try {
-    await ensureEngine((r) => ui.progress(r.progress || 0, r.text || ''));
+    await ensureEngine((r) => { Local.prog.p = r.progress || 0; paintLocalProgress(); });
+    Local.prog = null;
     await setSetting('localReady', true); await log('owner', 'local_ai.installed', pick.id); ui.done();
-  } catch (e) { await setSetting('localModel', ''); ui.error('The download didn’t finish' + (e && e.message ? ` (${String(e.message).slice(0, 80)})` : '') + '. You can try again; finished parts are kept.'); }
+  } catch (e) { Local.prog = null; await setSetting('localModel', ''); ui.error('The download didn’t finish' + (e && e.message ? ` (${String(e.message).slice(0, 80)})` : '') + '. You can try again; finished parts are kept.'); }
 }
 async function removeLocal() {
   const id = S.localModel; try { if (Local.engine && Local.engine.unload) await Local.engine.unload(); } catch {}
@@ -274,7 +282,8 @@ function localCardHTML() {
     <p class="faint" style="margin:10px 0 0">${ready ? 'Answers are simpler than cloud AI and take a few seconds to start.' : 'Keep the app open during the download. Standard gives better answers; Lite is faster on older phones.'}</p></div></div></div>`;
 }
 function bindLocalCard(rerender) {
-  const ui = { progress: (p, t) => { $('#lprog').style.display = 'block'; $('#lbar').style.width = Math.round(p * 100) + '%'; $('#ltext').textContent = t.replace(/\s*\[.*?\]\s*/g, ' ').slice(0, 120); $('#lbtns').style.display = 'none'; }, done: () => { toast('On-device AI is ready'); renderStatus(); rerender(); }, error: (m) => { toast(m); const b = $('#lbtns'); if (b) b.style.display = ''; const t = $('#ltext'); if (t) { $('#lprog').style.display = 'block'; t.textContent = m; } } };
+  paintLocalProgress();
+  const ui = { done: () => { toast('On-device AI is ready'); renderStatus(); if (onRoute('control')) rerender(); }, error: (m) => { toast(m); const b = $('#lbtns'); if (b) b.style.display = ''; const t = $('#ltext'); if (t) { $('#lprog').style.display = 'block'; t.textContent = m; } } };
   const b = (id, fn) => { const x = $(id); if (x) x.onclick = fn; };
   b('#lstd', () => installLocal('standard', ui)); b('#llite', () => installLocal('lite', ui));
   b('#lremove', async () => { await removeLocal(); toast('On-device AI removed'); renderStatus(); rerender(); });

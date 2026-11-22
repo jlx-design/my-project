@@ -300,10 +300,10 @@ try:
             page.goto(URL + '#control'); page.wait_for_selector('#localai #lstd')
             page.evaluate("""window.JLN_LLM_FACTORY = {
               prebuiltAppConfig: { model_list: [{ model_id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', vram_required_MB: 879 }] },
-              CreateMLCEngine: async (id, o) => { for (const p of [0.1, 0.5, 1]) { o.initProgressCallback({ progress: p, text: 'Fetching ' + Math.round(p*100) + '%' }); await new Promise(r => setTimeout(r, 60)); }
+              CreateMLCEngine: async (id, o) => { for (const p of [0.1, 0.5, 1]) { o.initProgressCallback({ progress: p, text: 'Fetching ' + Math.round(p*100) + '%' }); await new Promise(r => setTimeout(r, 400)); }
                 return { chat: { completions: { create: async (req) => { window.__llmReq = req; return (async function* () { for (const w of ['Hello ', 'Joshua, ', 'I run on your phone.']) yield { choices: [{ delta: { content: w } }] }; })(); } } }, interruptGenerate() {}, unload: async () => {} }; },
               deleteModelAllInfoInCache: async () => {} };""")
-            page.click('#lstd'); page.wait_for_selector('#localai >> text=Installed', timeout=8000)
+            page.click('#lstd'); page.wait_for_selector('#ltext >> text=Downloading', timeout=3000); page.wait_for_selector('#localai >> text=Installed', timeout=8000)
             page.screenshot(path=f'{SHOTS}/16-local-ai.png', full_page=True)
             # cloud AI without credits -> the reply must come from the phone instead
             def nocredit(route):
