@@ -384,7 +384,7 @@ async function sendMessage(text, convId, opts = {}) {
     return renderChat();
   }
   busy = true; aborter = new AbortController(); const agentId = routeAgent(text); const agentName = AGENTS[agentId]?.name || 'Evolve';
-  const th = $('#thread'); if (th) { const e = th.querySelector('.welcome'); if (e) e.remove(); th.insertAdjacentHTML('beforeend', `<div class="msg assistant" id="streaming"><div class="byline"><span class="avatar">${icon('spark', 13)}</span><span class="agent-name">${esc(agentName)}</span><span>${esc(provider === Providers.gateway ? modelName(S.model) : provider.label)}</span></div><div class="md"><span class="typing" aria-label="Thinking"><i></i><i></i><i></i></span></div></div>`); scrollEnd(); }
+  const th = $('#thread'); if (th) { const e = th.querySelector('.welcome'); if (e) e.remove(); th.insertAdjacentHTML('beforeend', `<div class="msg assistant" id="streaming"><div class="byline"><img class="avatar" src="icons/icon.svg" alt=""><span class="agent-name">${esc(agentName)}</span><span>${esc(provider === Providers.gateway ? modelName(S.model) : provider.label)}</span></div><div class="md"><span class="typing" aria-label="Thinking"><i></i><i></i><i></i></span></div></div>`); scrollEnd(); }
   setComposerBusy(true);
   try {
     const ctx = await buildContext(text);
@@ -595,7 +595,7 @@ async function renderHome() {
   const summary = priorities.length ? `${priorities.length} thing${priorities.length === 1 ? '' : 's'} need${priorities.length === 1 ? 's' : ''} you today` : open.length ? 'Nothing urgent today' : 'A clear day so far';
   if (!onRoute('home')) return;
   view().innerHTML = `
-    <div class="topbar"><div class="brand"><span class="brand-mark">${icon('spark', 15)}</span>JLn Evolve</div>${statusChip()}</div>
+    <div class="topbar"><div class="brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>${statusChip()}</div>
     <div class="hero"><h1>${greeting()}, ${esc(S.name)}.</h1><p class="sub">${esc(summary)}.</p>
     ${composerHTML('home-c', 'Ask, plan, or say “remind me to…”')}
     <div class="qa" role="group" aria-label="Quick actions">
@@ -651,7 +651,7 @@ async function renderChat() {
 }
 function msgHTML(m, isLast) {
   if (m.role === 'user') return `<div class="msg user">${esc(m.content)}</div>`;
-  const by = `<div class="byline"><span class="avatar">${icon('spark', 13)}</span><span class="agent-name">${esc(m.agent || 'Evolve')}</span><span>${esc(m.locality === 'local' ? 'on this device' : (m.model || ''))}</span></div>`;
+  const by = `<div class="byline"><img class="avatar" src="icons/icon.svg" alt=""><span class="agent-name">${esc(m.agent || 'Evolve')}</span><span>${esc(m.locality === 'local' ? 'on this device' : (m.model || ''))}</span></div>`;
   const results = (m.results || []).map((r) => `<div class="result"><strong>${esc(r.kind)}</strong><span class="grow">${esc(r.text)}</span>${r.link ? `<a href="${r.link}">Review</a>` : ''}</div>`).join('');
   const tools = m.retry ? `<button class="btn small" data-retry="${m.id}">Retry</button>` : `<button class="btn ghost small icon" data-copy="${m.id}" aria-label="Copy reply" title="Copy">${icon('copy', 16)}</button><button class="btn ghost small icon" data-speak="${m.id}" aria-label="Read aloud" title="Read aloud">${icon('speaker', 16)}</button>${isLast && m.agent !== 'Quick action' && m.agent !== 'System' ? `<button class="btn ghost small icon" data-regen="${m.id}" aria-label="Regenerate" title="Regenerate">${icon('redo', 16)}</button>` : ''}`;
   return `<div class="msg assistant">${by}<div class="md">${mdRender(m.content)}</div>${results}<div class="tools">${tools}</div></div>`;
@@ -1058,7 +1058,7 @@ const NAV = [['home', 'Home', 'home', ''], ['chat', 'Chat', 'chat', ''], ['voice
 async function renderNav(cur) {
   const pending = (await Store.all('drafts')).filter((d) => ['draft', 'in_review', 'approved'].includes(d.status)).length;
   const inMore = ['vault', 'memory', 'approvals', 'activity', 'control', 'status', 'connections'].includes(cur);
-  $('#nav').innerHTML = `<div class="label-desktop brand"><span class="brand-mark">${icon('spark', 16)}</span>JLn Evolve</div>` + NAV.map(([h, label, ic, cls]) => `<a href="#${h}" class="${cls} ${cur === h || (h === 'more' && inMore) ? 'on' : ''}" ${cur === h ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${h === 'approvals' && pending ? `<span class="badge">${pending}</span>` : ''}${h === 'more' && pending ? `<span class="badge">${pending}</span>` : ''}</a>`).join('');
+  $('#nav').innerHTML = `<div class="label-desktop brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>` + NAV.map(([h, label, ic, cls]) => `<a href="#${h}" class="${cls} ${cur === h || (h === 'more' && inMore) ? 'on' : ''}" ${cur === h ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${h === 'approvals' && pending ? `<span class="badge">${pending}</span>` : ''}${h === 'more' && pending ? `<span class="badge">${pending}</span>` : ''}</a>`).join('');
 }
 async function route() {
   const r = (location.hash || '#home').slice(1); const fn = ROUTES[r] || renderHome;

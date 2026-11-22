@@ -295,3 +295,5 @@ table.reg th { color: var(--muted); font-weight: 600; border-top: 0; }
 .widget .w-bar i { height: 5px; flex: 1; border-radius: 3px; background: color-mix(in srgb, currentColor 18%, transparent); }
 .widget .w-bar i.on { background: var(--c-brief); }
 @media (min-width: 640px) { .widgets { grid-template-columns: repeat(4, 1fr); } }
+img.brand-mark { width: 38px; height: auto; background: none; border-radius: 0; }
+img.avatar { width: 26px !important; height: auto !important; background: none !important; border-radius: 0 !important; }
