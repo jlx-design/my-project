@@ -296,6 +296,30 @@ try:
             page.click('#recbtn'); page.wait_for_selector('#vlist audio', timeout=8000)
         check('Live transcription appears while recording (no second microphone request)', t_live_transcript)
 
+        def t_local_ai():
+            page.goto(URL + '#control'); page.wait_for_selector('#localai #lstd')
+            page.evaluate("""window.JLN_LLM_FACTORY = {
+              prebuiltAppConfig: { model_list: [{ model_id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', vram_required_MB: 879 }] },
+              CreateMLCEngine: async (id, o) => { for (const p of [0.1, 0.5, 1]) { o.initProgressCallback({ progress: p, text: 'Fetching ' + Math.round(p*100) + '%' }); await new Promise(r => setTimeout(r, 60)); }
+                return { chat: { completions: { create: async (req) => { window.__llmReq = req; return (async function* () { for (const w of ['Hello ', 'Joshua, ', 'I run on your phone.']) yield { choices: [{ delta: { content: w } }] }; })(); } } }, interruptGenerate() {}, unload: async () => {} }; },
+              deleteModelAllInfoInCache: async () => {} };""")
+            page.click('#lstd'); page.wait_for_selector('#localai >> text=Installed', timeout=8000)
+            page.screenshot(path=f'{SHOTS}/16-local-ai.png', full_page=True)
+            # cloud AI without credits -> the reply must come from the phone instead
+            def nocredit(route):
+                if route.request.method == 'OPTIONS': return route.fulfill(status=204, headers={'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST'})
+                return route.fulfill(status=402, body='{"error":"ai_credits_needed"}', headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
+            ctx.unroute('https://gw.test/**'); ctx.route('https://gw.test/**', nocredit)
+            page.goto(URL + '#chat'); page.wait_for_selector('#chat-c-in')
+            page.fill('#chat-c-in', 'What can you do for me today?'); page.keyboard.press('Enter')
+            page.wait_for_selector('.msg.assistant >> text=I run on your phone.', timeout=8000)
+            expect(page.locator('.msg.assistant').last).to_contain_text('On-device AI')
+            assert page.evaluate("window.__llmReq.messages[0].role") == 'system', 'local prompt missing'
+            page.screenshot(path=f'{SHOTS}/17-local-reply.png')
+            ctx.unroute('https://gw.test/**'); ctx.route('https://gw.test/**', gw)
+            page.goto(URL + '#control'); page.wait_for_selector('#lremove'); page.click('#lremove'); page.wait_for_selector('#localai #lstd')
+        check('On-device AI: download with progress, answers when cloud has no credits, remove', t_local_ai)
+
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]
             assert not bad, 'console errors: ' + ' | '.join(bad[:5])
