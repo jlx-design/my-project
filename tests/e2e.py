@@ -185,12 +185,20 @@ try:
             page.reload(); page.wait_for_selector('h1')
             expect(page.locator('[data-status]').first).to_contain_text('OFFLINE')
             page.goto(URL + '#tasks'); page.wait_for_selector('text=Open a business bank account')
-            page.goto(URL + '#chat'); page.fill('#chat-c-in', 'Plan tomorrow'); page.keyboard.press('Enter')
-            page.wait_for_selector('text=You are offline')
+            page.goto(URL + '#chat'); page.click('#newc'); page.wait_for_selector('.welcome'); page.wait_for_timeout(300)
+            page.fill('#chat-c-in', 'Explain how VAT works in Ghana'); page.keyboard.press('Enter')
+            page.wait_for_selector('text=will answer automatically', timeout=5000)
+            page.fill('#chat-c-in', 'write a formal letter to the bank manager about my October statement'); page.keyboard.press('Enter')
+            page.wait_for_selector('text=prepared a letter template', timeout=5000)
+            page.fill('#chat-c-in', 'plan my day'); page.keyboard.press('Enter'); page.wait_for_selector('text=A plan for the rest of today')
             page.fill('#chat-c-in', 'task: Buy airtime'); page.keyboard.press('Enter'); page.wait_for_selector('text=Added to your tasks')
             page.screenshot(path=f'{SHOTS}/07-offline-chat.png', full_page=True)
-            ctx.set_offline(False)
-        check('Offline: app opens from cache, data available, honest AI status, commands work', t_offline)
+            n_before = len(gw_calls)
+            ctx.set_offline(False); page.evaluate("window.dispatchEvent(new Event('online'))")
+            page.wait_for_selector('text=Here is your formal letter to the bank', timeout=8000)
+            assert any('VAT' in (c.get('messages') or [{}])[-1].get('content', '') for c in gw_calls[n_before:]), 'queued question not answered when back online'
+            expect(page.locator('text=Waiting for connection')).to_have_count(0)
+        check('Offline: opens from cache, offline assistant (letters, plan, tasks), questions queued and auto-answered when back online', t_offline)
 
         def t_export_wipe():
             page.goto(URL + '#control')
@@ -279,6 +287,14 @@ try:
             page.click('[data-conn="2"]'); page.wait_for_selector('.sheet >> text=Meeting minutes'); page.click('.sheet [data-close]')
             page.screenshot(path=f'{SHOTS}/14-connections.png', full_page=True)
         check('Meeting minutes from a voice note; Connections screen with honest status', t_minutes_connections)
+
+        def t_live_transcript():
+            page.goto(URL + '#voice'); page.wait_for_selector('#recbtn'); page.click('#recbtn')
+            page.wait_for_selector('#live >> text=Call the accountant', timeout=12000)
+            assert page.locator('.big-mic.live').count() == 1, 'transcript should appear while still recording'
+            page.screenshot(path=f'{SHOTS}/15-live-transcript.png')
+            page.click('#recbtn'); page.wait_for_selector('#vlist audio', timeout=8000)
+        check('Live transcription appears while recording (no second microphone request)', t_live_transcript)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]

@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.3.4';
+const VERSION = '0.4.0';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -344,6 +344,56 @@ async function checkReminders() {
 setInterval(() => { checkReminders().catch(() => {}); }, 20000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkReminders().catch(() => {}); });
 
+/* Offline assistant: useful answers with no internet and no AI. Anything that truly needs AI
+   is queued and answered automatically the moment you are back online. */
+async function offlineAssist(text) {
+  const t = text.trim(); let m;
+  if ((m = t.match(/^(?:please\s+)?(?:write|draft|prepare)\s+(?:a|an|me a)?\s*(formal\s+|business\s+)?(letter|email|e-mail|memo)\b(?:\s+to\s+(.+?))?(?:\s+(?:about|regarding|on|asking for|requesting|explaining|for)\s+(.+))?\.?$/i))) {
+    const kind = /mail/i.test(m[2]) ? 'email' : m[2].toLowerCase(); const to = (m[3] || '').trim(); const topic = (m[4] || '').trim();
+    const subj = topic ? topic.charAt(0).toUpperCase() + topic.slice(1) : 'Subject';
+    const sign = (S.writingDna || '').match(/sign(?:-| )?off:?\s*([^.\n]+)/i); const close = sign ? sign[1].trim() : `Kind regards,\n${S.name}`;
+    const body = kind === 'email'
+      ? `Dear ${to || 'Sir or Madam'},\n\nI am writing regarding ${topic || '[the matter]'}.\n\n[Key point or request]\n\n[Any detail, date or next step]\n\nThank you for your time.\n\n${close}`
+      : `${S.name}\nJLn\n${new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}\n\n${to || '[Recipient]'}\n\nDear ${to ? to.replace(/^the\s+/i, '') : 'Sir or Madam'},\n\nRE: ${subj.toUpperCase()}\n\nI write to ${topic ? 'address ' + topic : '[state the purpose of the letter]'}.\n\n[Background in one or two sentences.]\n\n[Your request or the action you would like taken, with any date.]\n\nI look forward to your response.\n\nYours faithfully,\n\n${S.name}`;
+    const d = await Store.put('drafts', { id: uid(), kind, title: subj, to, subject: subj, body, status: 'draft', offline: true });
+    await log('agent', 'draft.created', d.title + ' (offline template)');
+    return { text: `I’m offline, so I’ve prepared a ${kind} template addressed to **${to || 'the recipient'}** with your sign-off. Fill in the bracketed parts in **Approvals**, or ask me again when you’re online for a fully written version.`, results: [{ kind: 'Draft awaiting your review', text: d.title, link: '#approvals' }] };
+  }
+  if (/^(?:plan|organi[sz]e)\s+(?:my\s+)?(?:day|today)|^what should i do (?:first|now|today)/i.test(t)) {
+    const open = (await Store.all('tasks')).filter((x) => !x.done).sort((a, b) => (a.priority || 2) - (b.priority || 2) || taskSort(a, b));
+    const td = todayStr(); const today = open.filter((x) => !x.due || x.due <= td).slice(0, 6);
+    if (!today.length) return { text: 'Nothing is due today. A good day to get ahead: pick one important task from **Tasks** and block an hour for it.' };
+    const start = new Date(); start.setMinutes(start.getMinutes() < 30 ? 30 : 60, 0, 0);
+    const lines = today.map((x, i) => { const a = new Date(start.getTime() + i * 60 * 60e3); const b = new Date(a.getTime() + 45 * 60e3); const f = (d) => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); return `${i + 1}. **${f(a)}–${f(b)}** ${x.title}${x.priority === 1 ? ' (high)' : ''}${x.due && x.due < td ? ' (overdue)' : ''}`; });
+    return { text: `**A plan for the rest of today**\n\n${lines.join('\n')}\n\nHighest priority and overdue items come first, with a 15-minute break between each.` };
+  }
+  if ((m = t.match(/^(?:what (?:did|do) i (?:note|write|save|record)|find|search(?: for)?|look up in my notes)\s+(?:about\s+|for\s+)?(.+?)\??$/i))) {
+    const q = m[1].toLowerCase(); const hit = (x) => String(x || '').toLowerCase().includes(q);
+    const [notes, voice, tasks] = await Promise.all([Store.all('notes'), Store.all('voice'), Store.all('tasks')]);
+    const found = [...notes.filter((n) => hit(n.title) || hit(n.body)).map((n) => `- **Note: ${n.title}** — ${(n.body || '').slice(0, 140)}`), ...voice.filter((v) => hit(v.title) || hit(v.transcript)).map((v) => `- **Voice note: ${v.title}** — ${(v.transcript || '').slice(0, 140)}`), ...tasks.filter((x) => hit(x.title)).map((x) => `- **Task:** ${x.title}${x.done ? ' (done)' : ''}`)];
+    return { text: found.length ? `Here’s what I found on this device for “${m[1]}”:\n\n${found.slice(0, 8).join('\n')}` : `Nothing on this device mentions “${m[1]}”.` };
+  }
+  return null;
+}
+async function answerQueued() {
+  if (!pickProvider() || busy) return;
+  const q = (await Store.all('messages')).filter((x) => x.queued).sort((a, b) => a.at.localeCompare(b.at));
+  if (!q.length) return;
+  toast(`Back online: answering ${q.length} saved question${q.length === 1 ? '' : 's'}`);
+  for (const m of q) { await Store.del('messages', m.id); await new Promise((res) => { const go = async () => { if (busy) return setTimeout(go, 400); const u = (await Store.all('messages')).filter((x) => x.conv === m.conv && x.role === 'user' && x.content === m.retry && x.at <= m.at).sort((a, b) => b.at.localeCompare(a.at))[0]; await sendMessage(m.retry, m.conv, { regen: true, before: u ? u.at : m.at }); res(); }; go(); }); }
+}
+window.addEventListener('online', () => setTimeout(() => answerQueued().catch(() => {}), 1200));
+function connectCardHTML() {
+  if (!hostedWithApi() || S.gatewayToken || !Cap.online) return '';
+  return `<div class="card connect-card"><div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="glyph g-chat">${icon('spark')}</span><div class="grow"><h3>Connect your AI on this device</h3><p class="faint" style="margin:2px 0 10px">Paste your personal setup link (or the key after <code>#key-</code>) once. Task commands work without it.</p>
+    <div class="row" style="flex-wrap:nowrap"><input class="input" id="ckey" placeholder="Paste your setup link" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="btn primary" id="ckeygo">Connect</button></div></div></div></div>`;
+}
+function bindConnectCard(after) {
+  const b = $('#ckeygo'); if (!b) return;
+  b.onclick = async () => { const v = ($('#ckey').value || '').trim(); const m = v.match(/#key-([A-Za-z0-9_-]{24,128})/) || v.match(/^([A-Za-z0-9_-]{24,128})$/); if (!m) { toast('That doesn’t look like your setup link'); return; } await setSetting('gatewayToken', m[1]); syncManifest(); await log('owner', 'device.connected', 'pasted key'); toast('Connected'); renderStatus(); after(); };
+}
+function syncManifest() { const l = document.querySelector('link[rel="manifest"]'); if (l && S.gatewayToken && hostedWithApi()) l.href = 'manifest.webmanifest?v=5&k=' + encodeURIComponent(S.gatewayToken); }
+
 async function localBriefing() {
   const [tasks, drafts, mems] = await Promise.all([Store.all('tasks'), Store.all('drafts'), Store.all('memories')]);
   const open = tasks.filter((x) => !x.done); const td = todayStr();
@@ -381,6 +431,9 @@ async function sendMessage(text, convId, opts = {}) {
   if (local) { await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: local, agent: 'Quick action', model: 'on this device', locality: 'local', at: now() }); return renderChat(); }
   const provider = pickProvider();
   if (!provider) {
+    const off = await offlineAssist(text);
+    if (off) { await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: off.text, results: off.results, agent: 'On-device assistant', model: 'on this device', locality: 'local', at: now() }); return renderChat(); }
+    if (!Cap.online && S.gatewayToken) { await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: 'You’re offline. I’ve saved this and **will answer automatically as soon as you’re back online**.\n\nWorking offline right now: reminders and tasks, notes, “plan my day”, “find …” in your notes, letter and email templates, and recording.', agent: 'System', model: '—', locality: 'local', retry: text, queued: true, at: now() }); return renderChat(); }
     const why = S.localOnly ? 'Local-only mode is on, and on-device AI is not installed yet (it arrives in Phase 4).' : (!Cap.online ? 'You are offline, and on-device AI is not installed yet (it arrives in Phase 4).' : 'No AI is connected yet. Open your personal setup link, or add a gateway in Control Centre → AI connection.');
     await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: `${why}\n\nYour message is saved. Tap **Retry** when you are connected.\n\nThese work right now without AI: \`task: …\`, \`remember: …\`, \`note: …\`, \`brief me\`.`, agent: 'System', model: '—', locality: 'local', retry: text, at: now() });
     return renderChat();
@@ -390,7 +443,7 @@ async function sendMessage(text, convId, opts = {}) {
   setComposerBusy(true);
   try {
     const ctx = await buildContext(text);
-    const history = (await Store.all('messages')).filter((m) => m.conv === conv.id && (m.role === 'user' || (m.role === 'assistant' && m.agent !== 'System' && m.agent !== 'Quick action'))).sort((a, b) => a.at.localeCompare(b.at)).slice(-20).map((m) => ({ role: m.role, content: m.content }));
+    const history = (await Store.all('messages')).filter((m) => m.conv === conv.id && (!opts.before || m.at <= opts.before) && (m.role === 'user' || (m.role === 'assistant' && m.agent !== 'System' && m.agent !== 'Quick action' && m.agent !== 'On-device assistant'))).sort((a, b) => a.at.localeCompare(b.at)).slice(-20).map((m) => ({ role: m.role, content: m.content }));
     let partial = '';
     if (agentId === 'research' && provider === Providers.gateway && /\b(latest|current|today|news|price|rate|law|who is|how much|search|look up|find out|research|compare)\b/i.test(text)) {
       try {
@@ -424,7 +477,7 @@ async function regenerate(msgId) {
   const m = await Store.get('messages', msgId); if (!m || busy) return;
   const msgs = (await Store.all('messages')).filter((x) => x.conv === m.conv).sort((a, b) => a.at.localeCompare(b.at));
   const lastUser = msgs.filter((x) => x.role === 'user' && x.at < m.at).pop(); if (!lastUser) return;
-  await Store.del('messages', m.id); sendMessage(lastUser.content, m.conv, { regen: true });
+  await Store.del('messages', m.id); sendMessage(lastUser.content, m.conv, { regen: true, before: lastUser.at });
 }
 const scrollEnd = () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 
@@ -488,7 +541,7 @@ async function flushOutbox() { /* Phase 6: encrypted Supabase sync. Queued exter
 function statusText() {
   const p = pickProvider();
   const net = Cap.online ? 'ONLINE' : 'OFFLINE';
-  const ai = p ? (p.locality === 'local' ? 'LOCAL AI' : 'CLOUD AI') : 'NO AI';
+  const ai = p ? (p.locality === 'local' ? 'LOCAL AI' : 'CLOUD AI') : (Cap.online ? (hostedWithApi() && !S.gatewayToken ? 'AI NOT CONNECTED' : 'NO AI') : 'ON-DEVICE');
   return { cls: Cap.online ? 'online' : 'offline', text: `${net} · ${ai}` };
 }
 function renderStatus() { $$('[data-status]').forEach((el) => { const s = statusText(); el.className = 'status ' + s.cls; el.innerHTML = `<span class="dot"></span>${s.text}`; }); }
@@ -598,19 +651,20 @@ async function renderHome() {
   if (!onRoute('home')) return;
   view().innerHTML = `
     <div class="topbar"><div class="brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>${statusChip()}</div>
+    ${connectCardHTML()}
     <div class="hero"><h1>${greeting()}, ${esc(S.name)}.</h1><p class="sub">${esc(summary)}.</p>
     ${composerHTML('home-c', 'Ask, plan, or say “remind me to…”')}
     <div class="qa" role="group" aria-label="Quick actions">
-      <button type="button" id="qa-rec"><span class="glyph g-voice">${icon('mic')}</span>Record</button>
-      <button type="button" id="qa-task"><span class="glyph g-task">${icon('check')}</span>New task</button>
-      <button type="button" id="qa-write"><span class="glyph g-write">${icon('edit')}</span>Write</button>
-      <button type="button" id="qa-brief"><span class="glyph g-brief">${icon('spark')}</span>Brief me</button>
+      <button type="button" class="t-voice" id="qa-rec"><span class="glyph">${icon('mic')}</span><span><span class="qa-t">Record</span><span class="qa-d">Live transcript</span></span></button>
+      <button type="button" class="t-task" id="qa-task"><span class="glyph">${icon('check')}</span><span><span class="qa-t">New task</span><span class="qa-d">Or “remind me to…”</span></span></button>
+      <button type="button" class="t-write" id="qa-write"><span class="glyph">${icon('edit')}</span><span><span class="qa-t">Write</span><span class="qa-d">Letter or email</span></span></button>
+      <button type="button" class="t-brief" id="qa-brief"><span class="glyph">${icon('spark')}</span><span><span class="qa-t">Brief me</span><span class="qa-d">Your day at a glance</span></span></button>
     </div></div>
     <div class="widgets">
       <a class="widget today" href="#tasks"><div class="w-head"><span class="w-day">${esc(d.toLocaleDateString(undefined, { weekday: 'long' }))}</span></div><div class="w-big">${d.getDate()}</div><div class="w-meta">${dueToday ? `${dueToday} due${overdue ? `, ${overdue} overdue` : ''}` : 'Nothing due'}${doneToday ? ` · ${doneToday} done` : ''}</div>${total ? `<div class="w-bar">${Array.from({ length: Math.min(total, 8) }, (_, i) => `<i class="${i < doneToday ? 'on' : ''}"></i>`).join('')}</div>` : ''}</a>
-      <a class="widget" href="#tasks"><div class="w-head"><span class="glyph g-task">${icon('bell')}</span>Next up</div>${nextUp ? `<div class="w-title">${esc(nextUp.title)}</div><div class="w-meta">${nextUp.remind_at ? esc(fmtWhen(nextUp.remind_at)) : nextUp.due ? 'Due ' + fmtDate(nextUp.due) : 'No date'}</div>` : `<div class="w-title muted">Say “remind me to call the bank at 3pm”.</div>`}</a>
-      <a class="widget" href="#approvals"><div class="w-head"><span class="glyph g-approve">${icon('approve')}</span>Approvals</div>${awaiting.length ? `<div class="w-big">${awaiting.length}</div><div class="w-meta">${esc(awaiting[0].title)}</div>` : `<div class="w-title muted">No drafts waiting for you.</div>`}</a>
-      <a class="widget" href="#voice"><div class="w-head"><span class="glyph g-voice">${icon('mic')}</span>Voice notes</div>${voice.length ? `<div class="w-title">${esc(voice[0].transcript ? voice[0].transcript.slice(0, 90) : voice[0].title)}</div><div class="w-meta">${voice.length} recording${voice.length === 1 ? '' : 's'}</div>` : `<div class="w-title muted">Record a thought and I’ll transcribe it.</div>`}</a>
+      <a class="widget" href="#tasks"><div class="w-head"><span class="glyph g-task">${icon('bell')}</span>Next up</div>${nextUp ? `<div class="w-title">${esc(nextUp.title)}</div><div class="w-meta">${nextUp.remind_at ? esc(fmtWhen(nextUp.remind_at)) : nextUp.due ? 'Due ' + fmtDate(nextUp.due) : 'No date'}</div>` : `<div class="w-empty">No reminders yet. Try “remind me to call the bank at 3pm”.</div>`}</a>
+      <a class="widget" href="#approvals"><div class="w-head"><span class="glyph g-approve">${icon('approve')}</span>Approvals</div>${awaiting.length ? `<div class="w-big">${awaiting.length}</div><div class="w-meta">${esc(awaiting[0].title)}</div>` : `<div class="w-empty">Nothing waiting. Drafts I write appear here for your approval.</div>`}</a>
+      <a class="widget" href="#voice"><div class="w-head"><span class="glyph g-voice">${icon('mic')}</span>Voice notes</div>${voice.length ? `<div class="w-title">${esc(voice[0].transcript ? voice[0].transcript.slice(0, 90) : voice[0].title)}</div><div class="w-meta">${voice.length} recording${voice.length === 1 ? '' : 's'}</div>` : `<div class="w-empty">Record a thought or a meeting and I’ll transcribe it.</div>`}</a>
     </div>
     ${toVerify ? `<div class="section"><div class="list"><a class="item" href="#memory"><span class="glyph g-memory">${icon('memory')}</span><div class="grow"><div class="title">${toVerify} memor${toVerify === 1 ? 'y' : 'ies'} to confirm</div><div class="meta">Nothing is treated as fact until you confirm it</div></div></a></div></div>` : ''}
     <div class="section"><div class="section-head"><h2>Today</h2><a href="#tasks">All tasks</a></div>
@@ -618,6 +672,7 @@ async function renderHome() {
     ${convs.filter((c) => c.title !== 'New conversation').length ? `<div class="section"><div class="section-head"><h2>Recent conversations</h2><a href="#chat">Open chat</a></div><div class="list">${convs.filter((c) => c.title !== 'New conversation').slice(0, 3).map((c) => `<a class="item" href="#chat" data-conv="${c.id}"><span class="glyph g-chat">${icon('chat')}</span><div class="grow"><div class="title">${esc(c.title)}</div><div class="meta">${fmtDate(c.updated_at)}</div></div></a>`).join('')}</div></div>` : ''}
     ${notes.length ? `<div class="section"><div class="section-head"><h2>Recent in your Vault</h2><a href="#vault">Open Vault</a></div><div class="list">${notes.slice(0, 3).map((n) => `<a class="item" href="#vault"><span class="glyph g-vault">${icon('vault')}</span><div class="grow"><div class="title">${esc(n.title)}</div><div class="meta">${n.kind === 'file' ? 'File, ' : ''}${fmtDate(n.updated_at)}</div></div></a>`).join('')}</div></div>` : ''}`;
   bindComposer('home-c', (v) => sendMessage(v));
+  bindConnectCard(renderHome);
   $('#qa-rec').onclick = () => { location.hash = 'voice'; if (navigator.mediaDevices && window.MediaRecorder && !inArtifact) startRecording(); };
   $('#qa-task').onclick = () => editTask(null, renderHome);
   $('#qa-write').onclick = () => { const ta = $('#home-c-in'); ta.value = 'Write a formal letter to '; ta.focus(); ta.dispatchEvent(new Event('input')); };
@@ -635,10 +690,11 @@ async function renderChat() {
   if (!onRoute('chat')) return;
   view().innerHTML = `
     <div class="topbar"><h2>${esc(conv && msgs.length ? conv.title : 'Chat')}</h2><div class="row" style="flex-wrap:nowrap">${statusChip()}<button class="btn small icon ghost" id="hist" aria-label="Conversation history">${icon('history', 18)}</button><button class="btn small icon" id="newc" aria-label="New chat">${icon('edit', 17)}</button></div></div>
-    ${!p ? `<div class="notice" style="margin-bottom:14px">${Cap.online ? 'AI isn’t connected on this device yet. Open your personal setup link once.' : 'You’re offline. On-device AI arrives in Phase 4.'} Quick actions still work: <code>task:</code>, <code>remember:</code>, <code>note:</code>, <code>brief me</code>.</div>` : ''}
+    ${!p ? (Cap.online && hostedWithApi() && !S.gatewayToken ? connectCardHTML() : `<div class="notice" style="margin-bottom:14px">${Cap.online ? 'AI isn’t connected yet.' : 'You’re offline. I can still set reminders, manage tasks, plan your day, search your notes and prepare letter templates. Anything else is answered automatically when you’re back online.'}</div>`) : ''}
     <div class="thread" id="thread">${msgs.length ? msgs.map((m) => msgHTML(m, m === lastAssistant)).join('') : `<div class="welcome" style="padding:28px 4px 8px"><h1 style="font-size:var(--t-xxl)">What can I take off your plate?</h1><p class="sub">I can plan, draft, research from your notes, and keep track of what you decide.</p>${suggestHTML()}</div>`}</div>
     <div class="chat-dock">${composerHTML('chat-c', 'Message JLn Evolve')}</div>`;
   bindComposer('chat-c', (v) => sendMessage(v, activeConv));
+  bindConnectCard(renderChat);
   bindSuggest('chat-c-in', activeConv);
   $('#newc').onclick = () => { if (busy) return; Store.put('conversations', { id: uid(), title: 'New conversation' }).then((c) => { activeConv = c.id; renderChat(); setTimeout(() => $('#chat-c-in') && $('#chat-c-in').focus(), 0); }); };
   $('#hist').onclick = () => sheet(`<h2>Conversations</h2><div class="list">${convs.filter((c) => c.title !== 'New conversation' || c.id === activeConv).map((c) => `<div class="item"><a href="#chat" class="grow" data-open="${c.id}" style="color:inherit;text-decoration:none"><div class="title">${esc(c.title)}</div><div class="meta">${fmtDate(c.updated_at)}</div></a><button class="btn ghost small icon danger" data-delc="${c.id}" aria-label="Delete conversation">${icon('trash', 16)}</button></div>`).join('') || '<div class="empty">No conversations yet.</div>'}</div>`, (el, close) => {
@@ -655,7 +711,7 @@ function msgHTML(m, isLast) {
   if (m.role === 'user') return `<div class="msg user">${esc(m.content)}</div>`;
   const by = `<div class="byline"><img class="avatar" src="icons/icon.svg" alt=""><span class="agent-name">${esc(m.agent || 'Evolve')}</span><span>${esc(m.locality === 'local' ? 'on this device' : (m.model || ''))}</span></div>`;
   const results = (m.results || []).map((r) => `<div class="result"><strong>${esc(r.kind)}</strong><span class="grow">${esc(r.text)}</span>${r.link ? `<a href="${r.link}">Review</a>` : ''}</div>`).join('');
-  const tools = m.retry ? `<button class="btn small" data-retry="${m.id}">Retry</button>` : `<button class="btn ghost small icon" data-copy="${m.id}" aria-label="Copy reply" title="Copy">${icon('copy', 16)}</button><button class="btn ghost small icon" data-speak="${m.id}" aria-label="Read aloud" title="Read aloud">${icon('speaker', 16)}</button>${isLast && m.agent !== 'Quick action' && m.agent !== 'System' ? `<button class="btn ghost small icon" data-regen="${m.id}" aria-label="Regenerate" title="Regenerate">${icon('redo', 16)}</button>` : ''}`;
+  const tools = m.queued ? '<span class="tag accent">Waiting for connection</span>' : m.retry ? `<button class="btn small" data-retry="${m.id}">Retry</button>` : `<button class="btn ghost small icon" data-copy="${m.id}" aria-label="Copy reply" title="Copy">${icon('copy', 16)}</button><button class="btn ghost small icon" data-speak="${m.id}" aria-label="Read aloud" title="Read aloud">${icon('speaker', 16)}</button>${isLast && m.agent !== 'Quick action' && m.agent !== 'System' ? `<button class="btn ghost small icon" data-regen="${m.id}" aria-label="Regenerate" title="Regenerate">${icon('redo', 16)}</button>` : ''}`;
   return `<div class="msg assistant">${by}<div class="md">${mdRender(m.content)}</div>${results}<div class="tools">${tools}</div></div>`;
 }
 
@@ -694,6 +750,43 @@ async function transcribeNote(id, quiet) {
     if (!quiet || onRoute('voice')) toast(e.code === 'ai_credits_needed' ? 'Transcription needs AI credits in Neon (Billing → AI gateway credits).' : 'Transcription failed. Tap Transcribe to try again.');
   } finally { transcribing.delete(id); if (onRoute('voice')) renderVoice(); }
 }
+/* Live transcription while recording: raw audio is tapped in parallel with the recorder
+   (no second microphone request, so it is safe on iPhone), cut into ~6 s WAV segments
+   and transcribed by your server. Text appears a few seconds behind your voice. */
+const Live = { proc: null, sink: null, buf: [], rate: 48000, timer: null, text: '', busy: false, queue: [], on: false };
+function pcmToWav16k(chunks, inRate) {
+  let len = 0; for (const c of chunks) len += c.length; if (!len) return null;
+  const all = new Float32Array(len); let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+  const ratio = inRate / 16000, outLen = Math.floor(len / ratio); const d = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) { const a = Math.floor(i * ratio), b = Math.min(len, Math.floor((i + 1) * ratio)); let s = 0; for (let j = a; j < b; j++) s += all[j]; d[i] = s / Math.max(1, b - a); }
+  let peak = 0; for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i])); if (peak < 0.012) return null; // silence: skip
+  const wav = new DataView(new ArrayBuffer(44 + d.length * 2)); const w = (p, s) => { for (let i = 0; i < s.length; i++) wav.setUint8(p + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); wav.setUint32(4, 36 + d.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 1, true); wav.setUint32(24, 16000, true); wav.setUint32(28, 32000, true); wav.setUint16(32, 2, true); wav.setUint16(34, 16, true); w(36, 'data'); wav.setUint32(40, d.length * 2, true);
+  for (let i = 0; i < d.length; i++) { const v = Math.max(-1, Math.min(1, d[i])); wav.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+  return new Blob([wav.buffer], { type: 'audio/wav' });
+}
+function liveStart(ac, src) {
+  Live.text = ''; Live.buf = []; Live.queue = []; Live.on = Providers.gateway.available();
+  showLive(Live.on ? '' : (Cap.online ? 'Live text needs your AI connection. The recording is still saved.' : 'Offline: the recording is saved and will be transcribed when you’re back online.'), !Live.on);
+  if (!Live.on || !ac.createScriptProcessor) return;
+  Live.rate = ac.sampleRate; Live.proc = ac.createScriptProcessor(4096, 1, 1); Live.sink = ac.createGain(); Live.sink.gain.value = 0;
+  Live.proc.onaudioprocess = (e) => { if (!Rec.paused) Live.buf.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  src.connect(Live.proc); Live.proc.connect(Live.sink); Live.sink.connect(ac.destination);
+  Live.timer = setInterval(liveFlush, 6000);
+}
+function liveFlush(final) {
+  const wav = pcmToWav16k(Live.buf, Live.rate); Live.buf = []; if (!wav) return Promise.resolve();
+  const job = (async () => { try { const t = (await Providers.gateway.transcribe(wav)).replace(/^\[no speech\]$/i, '').trim(); if (t) { Live.text += (Live.text ? ' ' : '') + t; showLive(Live.text); } } catch (e) { if (e && e.code === 'ai_credits_needed') { Live.on = false; clearInterval(Live.timer); showLive('Live text needs AI credits in Neon. The recording is still saved.', true); } } })();
+  Live.queue.push(job); return job;
+}
+async function liveStop() {
+  clearInterval(Live.timer);
+  if (Live.on) { await liveFlush(true); await Promise.all(Live.queue); }
+  try { Live.proc && Live.proc.disconnect(); Live.sink && Live.sink.disconnect(); } catch {}
+  Live.proc = null; Live.sink = null; const t = Live.text; Live.on = false; return t;
+}
+function showLive(text, quiet) { const lt = $('#live'); if (lt) lt.innerHTML = quiet ? `<span class="partial" style="font-size:var(--t-s);font-family:var(--sans)">${esc(text)}</span>` : `${esc(text)}<span class="partial">${Live.on && Rec.mr ? ' …' : ''}</span>`; }
+
 async function renderVoice() {
   const notes = (await Store.all('voice')).sort((a, b) => b.created_at.localeCompare(a.created_at));
   const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder) && !inArtifact;
@@ -710,7 +803,7 @@ async function renderVoice() {
         <button class="big-mic ${recording ? 'live' : ''}" id="recbtn" aria-label="${recording ? 'Stop and save' : 'Start recording'}">${icon(recording ? 'stop' : 'mic', 30)}</button>
         <label class="btn icon" style="border-radius:50%;width:48px;height:48px;cursor:pointer" aria-label="Import an audio file" title="Import audio">${icon('upload', 18)}<input type="file" id="vimport" accept="audio/*,.m4a,.mp3,.wav,.ogg,.aac" hidden></label>
       </div>
-      <p class="faint" style="margin:16px 0 0">${canRecord ? (recording ? 'Recording. Tap the red button to stop and save.' : 'Tap to record. Saved notes are transcribed automatically when you’re online.') : canDictate ? 'This preview captures your words live as a note.' : 'Recording isn’t available here. Open the installed app on your phone.'}</p>
+      <p class="faint" style="margin:16px 0 0">${canRecord ? (recording ? 'Recording. Tap the red button to stop and save.' : 'Tap to record. Your words appear here as you speak (a few seconds behind) when you’re online.') : canDictate ? 'This preview captures your words live as a note.' : 'Recording isn’t available here. Open the installed app on your phone.'}</p>
       <div class="live-text" id="live" aria-live="polite"></div>
     </div>
     <div class="section"><div class="section-head"><h2>Recordings</h2><span class="faint">${notes.length}</span></div>
@@ -721,7 +814,7 @@ async function renderVoice() {
   pbtn.onclick = () => { if (!Rec.mr) return; if (Rec.paused) { Rec.mr.resume(); Rec.paused = false; Rec.started = Date.now(); tick(); pbtn.innerHTML = icon('pause', 18); } else { Rec.mr.pause(); Rec.paused = true; Rec.elapsed += (Date.now() - Rec.started) / 1000; clearInterval(Rec.timer); pbtn.innerHTML = icon('play', 18); } };
   $('#vimport').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; const note = { id: uid(), title: f.name.replace(/\.[^.]+$/, ''), audio: f, duration: 0, transcript: '', lang: S.voiceLang, imported: true }; await Store.put('voice', note); await log('owner', 'voice.imported', f.name); renderVoice(); transcribeNote(note.id, true); };
   const vs = $('#vsearch'); if (vs) vs.oninput = (e) => { const q = e.target.value.toLowerCase(); $$('#vlist .item').forEach((r) => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; }); };
-  bindVoiceRows(); if (!recording) drawIdle(); else if (Rec.analyser) drawWave();
+  bindVoiceRows(); if (!recording) drawIdle(); else { if (Rec.analyser) drawWave(); if (Live.text) showLive(Live.text); }
   for (const n of notes) if (n.audio) { const a = $(`audio[data-a="${n.id}"]`); if (a) { if (!n.url) n.url = URL.createObjectURL(n.audio); a.src = n.url; } }
 }
 function voiceRow(n) {
@@ -760,22 +853,24 @@ async function startRecording() {
   Rec.chunks = []; Rec.elapsed = 0; Rec.started = Date.now(); Rec.paused = false;
   Rec.mr.ondataavailable = (e) => { if (e.data && e.data.size) Rec.chunks.push(e.data); };
   Rec.mr.start(isIOS ? undefined : 1000);
-  if (ac) { try { const src = ac.createMediaStreamSource(Rec.stream); Rec.analyser = ac.createAnalyser(); Rec.analyser.fftSize = 2048; src.connect(Rec.analyser); Rec.ac = ac; } catch { Rec.analyser = null; } }
+  if (ac) { try { const src = ac.createMediaStreamSource(Rec.stream); Rec.analyser = ac.createAnalyser(); Rec.analyser.fftSize = 2048; src.connect(Rec.analyser); Rec.ac = ac; Rec.src = src; } catch { Rec.analyser = null; } }
   if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then((l) => { Rec.lock = l; }).catch(() => {});
   await log('owner', 'voice.recording_started', '');
   renderVoice(); tick();
+  if (Rec.ac && Rec.src) liveStart(Rec.ac, Rec.src);
 }
 async function stopRecording() {
   if (Rec.dictating) return stopDictationNote();
   const mr = Rec.mr; if (!mr) return; const total = Rec.elapsed + (Rec.paused ? 0 : (Date.now() - Rec.started) / 1000);
   if (mr.state !== 'inactive') await new Promise((res) => { mr.onstop = res; try { mr.requestData && mr.state === 'recording' && mr.requestData(); } catch {} mr.stop(); setTimeout(res, 3000); });
+  showLive('Finishing the transcript…', true); const liveText = await liveStop();
   Rec.stream.getTracks().forEach((t) => t.stop()); cancelAnimationFrame(Rec.raf); clearInterval(Rec.timer); if (Rec.ac) { try { Rec.ac.close(); } catch {} } if (Rec.lock) { Rec.lock.release().catch(() => {}); Rec.lock = null; }
   const blob = new Blob(Rec.chunks, { type: (mr.mimeType || 'audio/mp4').split(';')[0] });
   Rec.mr = null; Rec.analyser = null; Rec.ac = null; Rec.paused = false;
   if (!blob.size) { toast('Nothing was recorded. Check microphone access and try again.'); return renderVoice(); }
-  const note = { id: uid(), title: 'Voice note, ' + new Date().toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }), audio: blob, duration: total, transcript: '', lang: S.voiceLang };
+  const note = { id: uid(), title: 'Voice note, ' + new Date().toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }), audio: blob, duration: total, transcript: liveText || '', live: !!liveText, lang: S.voiceLang };
   await Store.put('voice', note); await log('owner', 'voice.saved', `${note.title} (${fmtDur(total)})`);
-  toast('Saved'); renderVoice(); transcribeNote(note.id, true);
+  toast('Saved'); renderVoice(); if (!note.transcript) transcribeNote(note.id, true);
 }
 async function startDictationNote() {
   const d = Cap.claude.dictation; Rec.dictating = true; Rec.live = ''; Rec.partial = ''; Rec.elapsed = 0; Rec.started = Date.now();
@@ -1073,9 +1168,9 @@ window.addEventListener('hashchange', () => { window.scrollTo(0, 0); route(); })
 async function boot() {
   await Store.open(); await loadSettings();
   const m = location.hash.match(/^#key-([A-Za-z0-9_-]{24,128})$/);
-  if (m) { await setSetting('gatewayToken', m[1]); try { history.replaceState(null, '', location.pathname + '#home'); } catch { location.hash = 'home'; } await log('owner', 'device.connected', 'setup link'); setTimeout(() => toast('This device is connected to your AI'), 400); }
+  if (m) { await setSetting('gatewayToken', m[1]); syncManifest(); try { history.replaceState(null, '', location.pathname + '#home'); } catch { location.hash = 'home'; } await log('owner', 'device.connected', 'setup link'); setTimeout(() => toast('This device is connected to your AI'), 400); }
   if (!(await Store.all('activity')).length) await log('system', 'app.first_run', 'v' + VERSION);
-  route(); detectClaude();
+  syncManifest(); route(); detectClaude(); setTimeout(() => answerQueued().catch(() => {}), 2000);
   if ('serviceWorker' in navigator && !inArtifact && location.protocol !== 'file:') {
     const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });

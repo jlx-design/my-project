@@ -297,3 +297,21 @@ table.reg th { color: var(--muted); font-weight: 600; border-top: 0; }
 @media (min-width: 640px) { .widgets { grid-template-columns: repeat(4, 1fr); } }
 img.brand-mark { width: 38px; height: auto; background: none; border-radius: 0; }
 img.avatar { width: 26px !important; height: auto !important; background: none !important; border-radius: 0 !important; }
+
+/* ---------- v0.4 action cards (replace the icon-only buttons) ---------- */
+.qa { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
+.qa button { --tone: var(--c-task); position: relative; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 18px; min-height: 104px; padding: 14px 14px 13px; border-radius: 20px; text-align: left; cursor: pointer; color: var(--text); font: inherit;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--tone) 14%, var(--surface)) 0%, color-mix(in srgb, var(--tone) 6%, var(--surface)) 100%);
+  border: 1px solid color-mix(in srgb, var(--tone) 22%, var(--line)); box-shadow: 0 1px 0 rgba(255,255,255,.6) inset, 0 6px 18px -12px color-mix(in srgb, var(--tone) 60%, transparent); transition: transform .12s var(--ease), box-shadow .15s; }
+.qa button:active { transform: scale(.97); }
+.qa button:hover { box-shadow: 0 1px 0 rgba(255,255,255,.6) inset, 0 10px 24px -12px color-mix(in srgb, var(--tone) 70%, transparent); }
+.qa .glyph { width: 38px; height: 38px; border-radius: 12px; background: var(--tone); box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--tone) 80%, transparent), inset 0 -2px 0 rgba(0,0,0,.12); }
+.qa .glyph svg { width: 19px; height: 19px; }
+.qa .qa-t { display: block; font-weight: 650; font-size: var(--t-m); line-height: 1.2; }
+.qa .qa-d { display: block; font-size: var(--t-xs); color: var(--muted); margin-top: 2px; font-weight: 500; }
+.qa .qa-go { position: absolute; top: 14px; right: 14px; color: color-mix(in srgb, var(--tone) 70%, var(--muted)); opacity: .7; }
+.qa .t-voice { --tone: var(--c-voice); } .qa .t-task { --tone: var(--c-task); } .qa .t-write { --tone: var(--c-write); } .qa .t-brief { --tone: var(--c-brief); }
+@media (min-width: 640px) { .qa { grid-template-columns: repeat(4, 1fr); } }
+.widget .w-empty { font-size: var(--t-s); color: var(--muted); line-height: 1.45; font-weight: 500; }
+.connect-card { margin-bottom: 18px; border-color: var(--accent-line); }
+.connect-card .row .input { min-width: 0; }
