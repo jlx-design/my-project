@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -110,7 +110,7 @@ async function logNow(actor, event, detail = '') {
 }
 
 /* ---------- settings ---------- */
-const DEFAULTS = { localModel: '', localReady: false, connectHidden: false, asrReady: false, googleClientId: '', gmailToken: '', gmailExp: 0, gAuthState: '', gPending: '', name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
+const DEFAULTS = { localModel: '', localReady: false, connectHidden: false, asrReady: false, asrError: '', googleClientId: '', gmailToken: '', gmailExp: 0, gAuthState: '', gPending: '', name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
 const S = { ...DEFAULTS };
 async function loadSettings() { const rows = await Store.all('settings'); rows.forEach((r) => { S[r.id] = r.value; }); if (S.theme !== 'auto' && !THEMES.some((t) => t[0] === S.theme)) S.theme = 'daylight'; applyTheme(); }
 async function setSetting(key, value) { S[key] = value; await Store.put('settings', { id: key, value }); if (['theme', 'lightTheme', 'darkTheme', 'accent', 'size'].includes(key)) applyTheme(); }
@@ -298,7 +298,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=0.6.0', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=0.6.1', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -320,10 +320,12 @@ async function installAsr(rerender) {
   Asr.prog = { p: 0, total: 0 }; paintAsrProgress();
   try {
     await asrClient().load((p, total) => { Asr.prog.p = p; Asr.prog.total = total; paintAsrProgress(); });
-    Asr.prog = null; await setSetting('asrReady', true); keepStorage(); await log('owner', 'local_voice.installed', ASR_MODEL);
+    Asr.prog = null; await setSetting('asrReady', true); await setSetting('asrError', ''); keepStorage(); await log('owner', 'local_voice.installed', ASR_MODEL);
     toast('Voice-to-text on this phone is ready'); if (onRoute('control')) rerender();
   } catch (e) {
-    Asr.prog = null; const m = Cap.online ? 'The voice download didn’t finish. Tap Download to try again; finished parts are kept.' : 'Connect to the internet once to download voice-to-text.';
+    Asr.prog = null; try { Asr.worker && Asr.worker.terminate(); } catch {} Asr.worker = null;
+    const why = String((e && e.message) || e || 'unknown').slice(0, 160); await setSetting('asrError', why); await log('system', 'local_voice.failed', why);
+    const m = Cap.online ? 'Voice-to-text couldn’t finish setting up. Tap Download to try again; parts already downloaded are kept.' : 'Connect to the internet once to download voice-to-text.';
     toast(m); const t = $('#atext'); if (t) t.textContent = m; const b = $('#abtns'); if (b) b.style.display = '';
   }
 }
@@ -338,7 +340,8 @@ function asrCardHTML() {
     <p class="faint" style="margin:2px 0 10px">${ready ? 'Installed. Your recordings are turned into text on this phone: free, private and works offline.' : 'Turn recordings into text for free, without credits or internet. One-time download of about 100 MB.'}</p>
     <div id="aprog" style="display:none"><div style="height:8px;border-radius:4px;background:var(--sunken);overflow:hidden"><div id="abar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div></div><p class="faint" id="atext" style="margin:6px 0 0"></p></div>
     <div class="row" id="abtns">${ready ? '<button class="btn ghost danger" id="aremove">Remove</button>' : '<button class="btn primary" id="aget">Download (about 100 MB)</button>'}</div>
-    ${ready ? '<p class="faint" style="margin:10px 0 0">English. Live text appears a few seconds behind your voice.</p>' : ''}</div></div></div>`;
+    ${ready ? '<p class="faint" style="margin:10px 0 0">English. Live text appears a few seconds behind your voice.</p>' : '<p class="faint" style="margin:10px 0 0">Downloaded before but it still says Download? Tap it again: it finishes in a few seconds.</p>'}
+    ${!ready && S.asrError ? `<p class="faint" style="margin:8px 0 0">Last problem (send this to Claude): <code>${esc(S.asrError)}</code></p>` : ''}</div></div></div>`;
 }
 function bindAsrCard(rerender) {
   paintAsrProgress();

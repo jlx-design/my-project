@@ -322,6 +322,9 @@ try:
 
         def t_local_voice():
             page.goto(URL + '#control'); page.wait_for_selector('#localvoice #aget')
+            page.evaluate("window.JLN_ASR_FACTORY = { load: async () => { throw new Error('no wasm backend'); }, run: async () => '' }")
+            page.click('#aget'); page.wait_for_selector('#atext >> text=couldn’t finish', timeout=5000)
+            page.goto(URL + '#more'); page.goto(URL + '#control'); page.wait_for_selector('#localvoice >> text=no wasm backend')
             page.evaluate("""window.__asrRuns = 0; window.JLN_ASR_FACTORY = {
               load: async (onProg) => { for (const p of [0.2, 0.6, 1]) { onProg(p, 98e6); await new Promise(r => setTimeout(r, 300)); } return {}; },
               run: async (f) => { window.__asrRuns++; if (!(f instanceof Float32Array)) throw new Error('need Float32Array'); return 'Book the venue [BLANK_AUDIO] for Friday.'; } };""")
