@@ -1,0 +1,6 @@
+neon/dist/
+neon/min/
+preview/
+tests/screens/
+tests/results.json
+__pycache__/

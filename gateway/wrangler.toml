@@ -1,0 +1,20 @@
+name = "jln-evolve-gateway"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[ai]
+binding = "AI"
+
+[vars]
+# Your app's web address(es), comma-separated, e.g. "https://jln-evolve.pages.dev"
+ALLOWED_ORIGIN = "https://jln-evolve.pages.dev"
+# Check console.groq.com/docs/models for current free models and change these if one is retired
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_STT_MODEL = "whisper-large-v3-turbo"
+# Check developers.cloudflare.com/workers-ai/models for current model names
+CF_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+CF_STT_MODEL = "@cf/openai/whisper"
+
+# Secrets — never put these in this file. Set them with:
+#   npx wrangler secret put APP_TOKEN      (a long random password you also paste into the app)
+#   npx wrangler secret put GROQ_API_KEY   (from console.groq.com → API Keys)
