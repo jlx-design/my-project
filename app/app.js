@@ -110,7 +110,7 @@ async function logNow(actor, event, detail = '') {
 }
 
 /* ---------- settings ---------- */
-const DEFAULTS = { localModel: '', localReady: false, name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
+const DEFAULTS = { localModel: '', localReady: false, connectHidden: false, name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
 const S = { ...DEFAULTS };
 async function loadSettings() { const rows = await Store.all('settings'); rows.forEach((r) => { S[r.id] = r.value; }); if (S.theme !== 'auto' && !THEMES.some((t) => t[0] === S.theme)) S.theme = 'daylight'; applyTheme(); }
 async function setSetting(key, value) { S[key] = value; await Store.put('settings', { id: key, value }); if (['theme', 'lightTheme', 'darkTheme', 'accent', 'size'].includes(key)) applyTheme(); }
@@ -265,7 +265,7 @@ async function installLocal(size, ui) {
   try {
     await ensureEngine((r) => { Local.prog.p = r.progress || 0; paintLocalProgress(); });
     Local.prog = null;
-    await setSetting('localReady', true); await log('owner', 'local_ai.installed', pick.id); ui.done();
+    await setSetting('localReady', true); keepStorage(); await log('owner', 'local_ai.installed', pick.id); ui.done();
   } catch (e) { Local.prog = null; await setSetting('localModel', ''); ui.error('The download didn’t finish' + (e && e.message ? ` (${String(e.message).slice(0, 80)})` : '') + '. You can try again; finished parts are kept.'); }
 }
 async function removeLocal() {
@@ -273,10 +273,12 @@ async function removeLocal() {
   Local.engine = null; try { const lib = await llmLib(); if (lib.deleteModelAllInfoInCache && id) await lib.deleteModelAllInfoInCache(id); } catch {}
   await setSetting('localModel', ''); await setSetting('localReady', false); await log('owner', 'local_ai.removed', id || '');
 }
+const inIOSSafariTab = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone && !(window.matchMedia && matchMedia('(display-mode: standalone)').matches);
 function localCardHTML() {
   const ready = Providers.local.available();
+  const tabNote = inIOSSafariTab() ? '<div class="notice" style="margin:0 0 10px">You’re in Safari. On iPhone, Safari and the Home Screen app keep separate copies, so download it inside the Home Screen app you use every day.</div>' : '';
   return `<div class="card" id="localai"><div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="glyph g-brief">${icon('spark')}</span><div class="grow"><h3>On-device AI</h3>
-    <p class="faint" style="margin:2px 0 10px">${ready ? `Installed: <strong>${/0\.5B/i.test(S.localModel) ? 'Lite' : 'Standard'}</strong> (${esc(S.localModel.split('-Instruct')[0].replace(/-/g, ' '))}). Free, private and works offline. Used automatically when you’re offline or cloud AI isn’t available.` : 'Free and private: a small AI that runs on your phone, even with no internet. One-time download over Wi-Fi.'}</p>
+    ${tabNote}<p class="faint" style="margin:2px 0 10px">${ready ? `Installed: <strong>${/0\.5B/i.test(S.localModel) ? 'Lite' : 'Standard'}</strong> (${esc(S.localModel.split('-Instruct')[0].replace(/-/g, ' '))}). Free, private and works offline. Used automatically when you’re offline or cloud AI isn’t available.` : 'Free and private: a small AI that runs on your phone, even with no internet. One-time download over Wi-Fi.'}</p>
     <div id="lprog" style="display:none"><div style="height:8px;border-radius:4px;background:var(--sunken);overflow:hidden"><div id="lbar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div></div><p class="faint" id="ltext" style="margin:6px 0 0"></p></div>
     <div class="row" id="lbtns">${ready ? '<button class="btn" id="ltest">Test it</button><button class="btn ghost danger" id="lremove">Remove</button>' : '<button class="btn primary" id="lstd">Download Standard (about 0.9 GB)</button><button class="btn" id="llite">Lite (about 0.4 GB)</button>'}</div>
     <p class="faint" style="margin:10px 0 0">${ready ? 'Answers are simpler than cloud AI and take a few seconds to start.' : 'Keep the app open during the download. Standard gives better answers; Lite is faster on older phones.'}</p></div></div></div>`;
@@ -290,6 +292,7 @@ function bindLocalCard(rerender) {
   b('#ltest', () => { activeConv = null; location.hash = 'chat'; setTimeout(() => sendMessage('Say hello in one short sentence and tell me one thing you can help me with offline.', null, { forceLocal: true }), 50); });
 }
 
+function keepStorage() { try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch { /* not supported */ } }
 function pickProvider() {
   if (S.localOnly) return Providers.local.available() ? Providers.local : null;
   for (const p of [Providers.gateway, Providers.preview, Providers.local]) { if (p === Providers.gateway && Cap.cloudBlocked && Providers.local.available()) continue; if (p.available()) return p; }
@@ -470,12 +473,13 @@ async function answerQueued() {
 }
 window.addEventListener('online', () => setTimeout(() => answerQueued().catch(() => {}), 1200));
 function connectCardHTML() {
-  if (!hostedWithApi() || S.gatewayToken || !Cap.online) return '';
+  if (!hostedWithApi() || S.gatewayToken || !Cap.online || S.connectHidden || Providers.local.available()) return '';
   return `<div class="card connect-card"><div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="glyph g-chat">${icon('spark')}</span><div class="grow"><h3>Connect your AI on this device</h3><p class="faint" style="margin:2px 0 10px">Paste your personal setup link (or the key after <code>#key-</code>) once. Task commands work without it.</p>
-    <div class="row" style="flex-wrap:nowrap"><input class="input" id="ckey" placeholder="Paste your setup link" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="btn primary" id="ckeygo">Connect</button></div></div></div></div>`;
+    <div class="row" style="flex-wrap:nowrap"><input class="input" id="ckey" placeholder="Paste your setup link" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="btn primary" id="ckeygo">Connect</button></div><button class="btn ghost small" id="ckeyno" style="margin-top:8px">Not now</button></div></div></div>`;
 }
 function bindConnectCard(after) {
   const b = $('#ckeygo'); if (!b) return;
+  const no = $('#ckeyno'); if (no) no.onclick = async () => { await setSetting('connectHidden', true); toast('Hidden. You can connect any time in Control Centre.'); after(); };
   b.onclick = async () => { const v = ($('#ckey').value || '').trim(); const m = v.match(/#key-([A-Za-z0-9_-]{24,128})/) || v.match(/^([A-Za-z0-9_-]{24,128})$/); if (!m) { toast('That doesn’t look like your setup link'); return; } await setSetting('gatewayToken', m[1]); syncManifest(); await log('owner', 'device.connected', 'pasted key'); toast('Connected'); renderStatus(); after(); };
 }
 function syncManifest() { const l = document.querySelector('link[rel="manifest"]'); if (l && S.gatewayToken && hostedWithApi()) l.href = 'manifest.webmanifest?v=5&k=' + encodeURIComponent(S.gatewayToken); }
@@ -1267,7 +1271,7 @@ async function boot() {
   const m = location.hash.match(/^#key-([A-Za-z0-9_-]{24,128})$/);
   if (m) { await setSetting('gatewayToken', m[1]); syncManifest(); try { history.replaceState(null, '', location.pathname + '#home'); } catch { location.hash = 'home'; } await log('owner', 'device.connected', 'setup link'); setTimeout(() => toast('This device is connected to your AI'), 400); }
   if (!(await Store.all('activity')).length) await log('system', 'app.first_run', 'v' + VERSION);
-  syncManifest(); route(); detectClaude(); setTimeout(() => answerQueued().catch(() => {}), 2000);
+  keepStorage(); syncManifest(); route(); detectClaude(); setTimeout(() => answerQueued().catch(() => {}), 2000);
   if ('serviceWorker' in navigator && !inArtifact && location.protocol !== 'file:') {
     const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
