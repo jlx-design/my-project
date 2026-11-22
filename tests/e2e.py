@@ -145,7 +145,7 @@ try:
             page.fill('#dbo', 'Dear Sir or Madam,\n\nChanged text after approval.\n\nKind regards,\nJoshua'); page.click('#dsave')
             page.click('[data-draft]'); expect(page.locator('.sheet .steps span.on')).to_have_text('Draft')
             page.click('#drev'); page.click('#dapp'); page.click('#dsub')
-            page.wait_for_selector('text=Direct sending from JLn Evolve needs the Gmail connection')
+            page.wait_for_selector('text=JLn Evolve never sends for you')
             page.screenshot(path=f'{SHOTS}/04-submit.png')
             page.click('#sdone'); page.wait_for_selector('text=Finished')
         check('Approvals: Draft→Review→Approve, edit resets, Submit hands off honestly', t_approvals)
@@ -319,6 +319,59 @@ try:
             ctx.unroute('https://gw.test/**'); ctx.route('https://gw.test/**', gw)
             page.goto(URL + '#control'); page.wait_for_selector('#lremove'); page.click('#lremove'); page.wait_for_selector('#localai #lstd')
         check('On-device AI: download with progress, answers when cloud has no credits, remove', t_local_ai)
+
+        def t_local_voice():
+            page.goto(URL + '#control'); page.wait_for_selector('#localvoice #aget')
+            page.evaluate("""window.__asrRuns = 0; window.JLN_ASR_FACTORY = {
+              load: async (onProg) => { for (const p of [0.2, 0.6, 1]) { onProg(p, 98e6); await new Promise(r => setTimeout(r, 300)); } return {}; },
+              run: async (f) => { window.__asrRuns++; if (!(f instanceof Float32Array)) throw new Error('need Float32Array'); return 'Book the venue [BLANK_AUDIO] for Friday.'; } };""")
+            page.click('#aget'); page.wait_for_selector('#atext >> text=Downloading', timeout=3000)
+            page.wait_for_selector('#localvoice >> text=Installed', timeout=8000)
+            before = len([c for c in gw_calls if 'audio' in c])
+            page.goto(URL + '#voice'); page.wait_for_selector('#recbtn'); page.click('#recbtn')
+            page.wait_for_selector('#live >> text=Book the venue for Friday.', timeout=12000)
+            page.click('#recbtn'); page.wait_for_selector('#vlist audio', timeout=8000)
+            assert len([c for c in gw_calls if 'audio' in c]) == before, 'audio must not go to the cloud when voice-to-text is on the phone'
+            assert page.evaluate('window.__asrRuns') >= 1
+            page.screenshot(path=f'{SHOTS}/18-local-voice.png')
+        check('Voice-to-text on the phone: download with progress, live text without the cloud', t_local_voice)
+
+        def t_gmail_drafts():
+            saved = {}
+            def google(route):
+                from urllib.parse import urlparse, parse_qs
+                q = parse_qs(urlparse(route.request.url).query)
+                assert q['scope'][0] == 'https://www.googleapis.com/auth/gmail.compose', 'only the compose scope'
+                saved['redirect'] = q['redirect_uri'][0]
+                return route.fulfill(status=302, headers={'location': q['redirect_uri'][0] + '#access_token=tok-1&token_type=Bearer&expires_in=3599&state=' + q['state'][0]})
+            def gmail_api(route):
+                if route.request.method == 'OPTIONS': return route.fulfill(status=204, headers={'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST'})
+                saved['auth'] = route.request.headers.get('authorization'); saved['body'] = json.loads(route.request.post_data)
+                return route.fulfill(status=200, body='{"id":"r-123","message":{"id":"m1"}}', headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
+            ctx.route('https://accounts.google.com/**', google); ctx.route('https://gmail.googleapis.com/**', gmail_api)
+            page.goto(URL + '#control'); page.wait_for_selector('#gcid')
+            page.fill('#gcid', 'not-a-client-id'); page.click('#gsave'); page.wait_for_selector('text=doesn’t look like a Google Client ID')
+            page.fill('#gcid', '1234-abc.apps.googleusercontent.com'); page.click('#gsave'); page.wait_for_selector('#gconn')
+            page.goto(URL + '#approvals'); page.click('[data-draft]'); page.wait_for_selector('.sheet .steps')
+            if page.locator('#drev').count(): page.click('#drev'); page.wait_for_selector('#dapp')
+            if page.locator('#dapp').count(): page.click('#dapp')
+            page.wait_for_selector('#dsub')
+            title = page.locator('.sheet h2').first.inner_text()
+            page.click('#dsub'); page.click('#sgmail')
+            page.wait_for_selector('.sheet >> text=Saved in Gmail Drafts', timeout=10000)
+            assert saved['redirect'] == URL, saved['redirect']
+            assert saved['auth'] == 'Bearer tok-1'
+            import base64
+            raw = saved['body']['message']['raw']; mime = base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4)).decode()
+            assert 'Subject: =?UTF-8?B?' in mime and 'charset="UTF-8"' in mime, mime[:200]
+            body = base64.b64decode(mime.split('\r\n\r\n', 1)[1].replace('\r\n', '')).decode()
+            assert len(body) > 20, body
+            assert page.evaluate("location.hash") == '#approvals' and 'access_token' not in page.url, 'token must be cleared from the address bar'
+            assert page.locator('.sheet >> text=I sent it, mark submitted').count() == 1, 'saving to Gmail must not mark it sent'
+            page.screenshot(path=f'{SHOTS}/19-gmail-draft.png')
+            page.click('.sheet [data-close]')
+            ctx.unroute('https://accounts.google.com/**'); ctx.unroute('https://gmail.googleapis.com/**')
+        check('Gmail drafts: Google sign-in (compose scope only), saved to Drafts, never marked sent', t_gmail_drafts)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]

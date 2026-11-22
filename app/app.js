@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -110,7 +110,7 @@ async function logNow(actor, event, detail = '') {
 }
 
 /* ---------- settings ---------- */
-const DEFAULTS = { localModel: '', localReady: false, connectHidden: false, name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
+const DEFAULTS = { localModel: '', localReady: false, connectHidden: false, asrReady: false, googleClientId: '', gmailToken: '', gmailExp: 0, gAuthState: '', gPending: '', name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
 const S = { ...DEFAULTS };
 async function loadSettings() { const rows = await Store.all('settings'); rows.forEach((r) => { S[r.id] = r.value; }); if (S.theme !== 'auto' && !THEMES.some((t) => t[0] === S.theme)) S.theme = 'daylight'; applyTheme(); }
 async function setSetting(key, value) { S[key] = value; await Store.put('settings', { id: key, value }); if (['theme', 'lightTheme', 'darkTheme', 'accent', 'size'].includes(key)) applyTheme(); }
@@ -290,6 +290,125 @@ function bindLocalCard(rerender) {
   b('#lstd', () => installLocal('standard', ui)); b('#llite', () => installLocal('lite', ui));
   b('#lremove', async () => { await removeLocal(); toast('On-device AI removed'); renderStatus(); rerender(); });
   b('#ltest', () => { activeConv = null; location.hash = 'chat'; setTimeout(() => sendMessage('Say hello in one short sentence and tell me one thing you can help me with offline.', null, { forceLocal: true }), 50); });
+}
+
+/* ---------- On-device voice-to-text (Whisper in a worker): free, private, offline once downloaded ---------- */
+const ASR_MODEL = 'Xenova/whisper-base.en';
+const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.resolve(), loaded: false };
+function asrClient() {
+  if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
+  if (!Asr.worker) {
+    Asr.worker = new Worker('asr.js?v=0.6.0', { type: 'module' });
+    Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
+    Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
+  }
+  const call = (msg, transfer) => new Promise((res, rej) => { const id = ++Asr.seq; Asr.wait.set(id, { res, rej }); Asr.worker.postMessage({ id, model: ASR_MODEL, ...msg }, transfer || []); });
+  return { load: (onProg) => { Asr.onprog = onProg; return call({ type: 'load' }); }, run: async (audio) => (await call({ type: 'run', audio }, [audio.buffer])).text || '' };
+}
+const asrReady = () => !!S.asrReady;
+const cleanAsr = (t) => String(t || '').replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+// one at a time: the model handles a single clip per call
+function asrRun(float32) { const job = Asr.chain.then(() => asrClient().run(float32)).then(cleanAsr); Asr.chain = job.catch(() => {}); return job; }
+function paintAsrProgress() {
+  const pr = Asr.prog, box = $('#aprog'); if (!pr || !box) return;
+  box.style.display = 'block'; const bar = $('#abar'); if (bar) bar.style.width = Math.round(pr.p * 100) + '%';
+  const t = $('#atext'); if (t) t.textContent = `Downloading: ${Math.round(pr.p * 100)}%${pr.total ? ` of about ${Math.max(1, Math.round(pr.total / 1e6))} MB` : ''}. Keep the app open.`;
+  const b = $('#abtns'); if (b) b.style.display = 'none';
+}
+async function installAsr(rerender) {
+  if (Asr.prog) return;
+  Asr.prog = { p: 0, total: 0 }; paintAsrProgress();
+  try {
+    await asrClient().load((p, total) => { Asr.prog.p = p; Asr.prog.total = total; paintAsrProgress(); });
+    Asr.prog = null; await setSetting('asrReady', true); keepStorage(); await log('owner', 'local_voice.installed', ASR_MODEL);
+    toast('Voice-to-text on this phone is ready'); if (onRoute('control')) rerender();
+  } catch (e) {
+    Asr.prog = null; const m = Cap.online ? 'The voice download didn’t finish. Tap Download to try again; finished parts are kept.' : 'Connect to the internet once to download voice-to-text.';
+    toast(m); const t = $('#atext'); if (t) t.textContent = m; const b = $('#abtns'); if (b) b.style.display = '';
+  }
+}
+async function removeAsr() {
+  try { if (Asr.worker) Asr.worker.terminate(); } catch {} Asr.worker = null;
+  try { if (window.caches) await caches.delete('transformers-cache'); } catch {}
+  await setSetting('asrReady', false); await log('owner', 'local_voice.removed', ASR_MODEL);
+}
+function asrCardHTML() {
+  const ready = asrReady();
+  return `<div class="card" id="localvoice"><div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="glyph g-voice">${icon('mic')}</span><div class="grow"><h3>Voice-to-text on this phone</h3>
+    <p class="faint" style="margin:2px 0 10px">${ready ? 'Installed. Your recordings are turned into text on this phone: free, private and works offline.' : 'Turn recordings into text for free, without credits or internet. One-time download of about 100 MB.'}</p>
+    <div id="aprog" style="display:none"><div style="height:8px;border-radius:4px;background:var(--sunken);overflow:hidden"><div id="abar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div></div><p class="faint" id="atext" style="margin:6px 0 0"></p></div>
+    <div class="row" id="abtns">${ready ? '<button class="btn ghost danger" id="aremove">Remove</button>' : '<button class="btn primary" id="aget">Download (about 100 MB)</button>'}</div>
+    ${ready ? '<p class="faint" style="margin:10px 0 0">English. Live text appears a few seconds behind your voice.</p>' : ''}</div></div></div>`;
+}
+function bindAsrCard(rerender) {
+  paintAsrProgress();
+  const g = $('#aget'); if (g) g.onclick = () => installAsr(rerender);
+  const r = $('#aremove'); if (r) r.onclick = async () => { await removeAsr(); toast('Voice-to-text removed'); rerender(); };
+}
+
+/* ---------- Gmail drafts: your Google sign-in, saved straight into your Gmail Drafts folder. Never sends. ---------- */
+const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.compose';
+const gmailRedirect = () => location.origin + '/';
+const gmailConnected = () => !!S.gmailToken && Date.now() < (S.gmailExp || 0) - 60000;
+async function gmailSignIn(pendingDraftId) {
+  if (!S.googleClientId) { toast('Add your Google Client ID in Control Centre → Gmail first'); location.hash = 'control'; return; }
+  const state = uid() + uid();
+  await setSetting('gAuthState', state); await setSetting('gPending', pendingDraftId || '');
+  const q = new URLSearchParams({ client_id: S.googleClientId, redirect_uri: gmailRedirect(), response_type: 'token', scope: GMAIL_SCOPE, state, include_granted_scopes: 'true' });
+  location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + q.toString();
+}
+async function gmailHandleReturn() {
+  const h = location.hash; if (!/^#(access_token|error)=|&state=/.test(h) || !h.includes('state=')) return false;
+  const p = new URLSearchParams(h.slice(1)); const ok = p.get('state') && p.get('state') === S.gAuthState;
+  const pending = S.gPending; await setSetting('gAuthState', ''); await setSetting('gPending', '');
+  try { history.replaceState(null, '', location.pathname + '#approvals'); } catch { location.hash = 'approvals'; }
+  if (!ok) { toast('Google sign-in didn’t match this app. Try again.'); return true; }
+  if (p.get('error') || !p.get('access_token')) { toast('Gmail wasn’t connected' + (p.get('error') === 'access_denied' ? ' (access was not allowed)' : '')); return true; }
+  await setSetting('gmailToken', p.get('access_token')); await setSetting('gmailExp', Date.now() + (parseInt(p.get('expires_in'), 10) || 3600) * 1000);
+  await log('owner', 'gmail.connected', 'gmail.compose');
+  if (pending) setTimeout(() => saveToGmailDrafts(pending).catch(() => {}), 300); else toast('Gmail connected');
+  return true;
+}
+const b64u = (bytes) => { let s = ''; const a = new Uint8Array(bytes); for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const b64 = (str) => { const a = new TextEncoder().encode(str); let s = ''; for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
+function mimeDraft(d) {
+  const one = (v) => String(v || '').replace(/[\r\n]+/g, ' ').trim();
+  const lines = [];
+  if (one(d.to)) lines.push('To: ' + one(d.to));
+  lines.push('Subject: =?UTF-8?B?' + b64(one(d.subject || d.title)) + '?=', 'MIME-Version: 1.0', 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', b64(String(d.body || '').replace(/\r?\n/g, '\r\n')).replace(/.{76}/g, '$&\r\n'));
+  return b64u(new TextEncoder().encode(lines.join('\r\n')));
+}
+async function saveToGmailDrafts(id) {
+  const d = await Store.get('drafts', id); if (!d) return;
+  if (d.status !== 'approved' || await draftHash(d) !== d.approved_hash) { toast('This draft changed since you approved it. Approve it again first.'); return renderApprovals(); }
+  if (!Cap.online) { toast('You’re offline. Try again when you’re connected.'); return; }
+  if (!gmailConnected()) return gmailSignIn(id);
+  const r = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/drafts', { method: 'POST', headers: { authorization: 'Bearer ' + S.gmailToken, 'content-type': 'application/json' }, body: JSON.stringify({ message: { raw: mimeDraft(d) } }) }).catch(() => null);
+  if (r && r.status === 401) { await setSetting('gmailToken', ''); return gmailSignIn(id); }
+  if (!r || !r.ok) { toast('Gmail didn’t accept the draft' + (r ? ` (${r.status})` : ' (network)') + '. Nothing was sent.'); return; }
+  const j = await r.json().catch(() => ({}));
+  d.gmail_draft_id = j.id || 'saved'; d.gmail_saved_at = now(); await Store.put('drafts', d);
+  await log('agent', 'gmail.draft_saved', d.title);
+  sheet(`<h2>Saved in Gmail Drafts</h2><p class="muted">“${esc(d.title)}” is in your Gmail <strong>Drafts</strong> folder. Nothing has been sent: open Gmail, check it, and press Send yourself.</p>
+    <div class="row"><a class="btn primary" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noopener">Open Gmail Drafts</a><button class="btn" id="gsent">I sent it, mark submitted</button><button class="btn ghost" data-close>Done</button></div>`, (el, close) => {
+    $('#gsent', el).onclick = async () => { d.status = 'submitted'; d.submitted_at = now(); await Store.put('drafts', d); await log('owner', 'draft.submitted_by_owner', d.title); close(); renderApprovals(); };
+  });
+  if (onRoute('approvals')) renderApprovals();
+}
+function gmailCardHTML() {
+  const has = !!S.googleClientId; const on = gmailConnected();
+  return `<div class="card" id="gmailcard"><div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="glyph g-write">${icon('mail')}</span><div class="grow"><h3>Gmail drafts</h3>
+    <p class="faint" style="margin:2px 0 10px">${!has ? 'Save approved letters and emails straight into your Gmail Drafts folder. JLn Evolve can never send for you: you press Send in Gmail.' : on ? 'Connected. Approved drafts can be saved to your Gmail Drafts folder.' : 'Ready. Google asks you to sign in the first time you save a draft (and again about every hour).'}</p>
+    ${has ? '' : `<p class="faint" style="margin:0 0 8px">One-time setup: create a free Google Client ID (steps from Claude), using this web address for both the origin and the redirect:</p><div class="row" style="flex-wrap:nowrap"><input class="input" readonly value="${esc(gmailRedirect())}" id="gredir"><button class="btn small" id="gcopy">Copy</button></div>`}
+    <label class="field" style="margin-top:8px"><span>Google Client ID</span><input class="input" id="gcid" value="${esc(S.googleClientId || '')}" placeholder="something.apps.googleusercontent.com" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <div class="row"><button class="btn primary" id="gsave">Save</button>${has ? `<button class="btn" id="gconn">${on ? 'Reconnect' : 'Connect Gmail'}</button>` : ''}${on ? '<button class="btn ghost danger" id="goff">Disconnect</button>' : ''}</div></div></div></div>`;
+}
+function bindGmailCard(rerender) {
+  const b = (id, fn) => { const x = $(id); if (x) x.onclick = fn; };
+  b('#gcopy', async () => { try { await navigator.clipboard.writeText(gmailRedirect()); toast('Copied'); } catch { toast('Copy is blocked here'); } });
+  b('#gsave', async () => { const v = ($('#gcid').value || '').trim(); if (v && !/^[\w-]+\.apps\.googleusercontent\.com$/.test(v)) { toast('That doesn’t look like a Google Client ID'); return; } await setSetting('googleClientId', v); await log('owner', 'gmail.client_id_set', v ? 'set' : 'cleared'); toast(v ? 'Saved' : 'Cleared'); rerender(); });
+  b('#gconn', () => gmailSignIn(''));
+  b('#goff', async () => { const t = S.gmailToken; await setSetting('gmailToken', ''); await setSetting('gmailExp', 0); try { await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(t), { method: 'POST' }); } catch {} await log('owner', 'gmail.disconnected', ''); toast('Gmail disconnected'); rerender(); });
 }
 
 function keepStorage() { try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch { /* not supported */ } }
@@ -820,6 +939,16 @@ function msgHTML(m, isLast) {
 const Rec = { mr: null, chunks: [], stream: null, started: 0, elapsed: 0, timer: null, analyser: null, raf: null, paused: false, ac: null };
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const transcribing = new Set();
+async function to16k(blob) {
+  const buf = await blob.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext; const ctx = new AC();
+  const audio = await new Promise((res, rej) => { const p = ctx.decodeAudioData(buf, res, rej); if (p && p.then) p.then(res, rej); });
+  ctx.close && ctx.close();
+  const rate = 16000, len = Math.max(1, Math.ceil(audio.duration * rate));
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext; const off = new OAC(1, len, rate);
+  const src = off.createBufferSource(); src.buffer = audio; src.connect(off.destination); src.start(0);
+  return new Float32Array((await off.startRendering()).getChannelData(0));
+}
 async function toWav16k(blob) {
   const buf = await blob.arrayBuffer();
   const AC = window.AudioContext || window.webkitAudioContext; const ctx = new AC();
@@ -837,23 +966,38 @@ async function toWav16k(blob) {
 }
 async function transcribeNote(id, quiet) {
   const n = await Store.get('voice', id); if (!n || !n.audio || transcribing.has(id)) return;
-  if (!Providers.gateway.available()) { if (!quiet) toast(Cap.online ? 'Transcription needs your AI connection. Open your setup link once.' : 'You’re offline. The note is saved; transcribe it when you’re back online.'); return; }
+  const local = asrReady();
+  if (!local && !Providers.gateway.available()) { if (!quiet) toast(Cap.online ? 'For free voice-to-text, download it in Control Centre → Voice-to-text on this phone.' : 'You’re offline. Download voice-to-text on this phone (Control Centre) to transcribe without internet.'); return; }
   transcribing.add(id); if (onRoute('voice')) renderVoice();
   try {
-    let wav; try { wav = await toWav16k(n.audio); } catch { wav = n.audio; }
-    n.transcript = (await Providers.gateway.transcribe(wav)).replace(/^\[no speech\]$/i, '').trim(); n.transcribed_at = now();
+    if (local) { n.transcript = await asrRun(await to16k(n.audio)); n.tx_by = 'on this phone'; }
+    else { let wav; try { wav = await toWav16k(n.audio); } catch { wav = n.audio; } n.transcript = (await Providers.gateway.transcribe(wav)).replace(/^\[no speech\]$/i, '').trim(); n.tx_by = 'cloud'; }
+    n.transcribed_at = now(); delete n.tx_error;
     if (!n.transcript) n.transcript = '';
     delete n.url; await Store.put('voice', n); await log('agent', 'voice.transcribed', n.title);
     if (!quiet || onRoute('voice')) toast(n.transcript ? 'Transcribed' : 'No speech was found in that recording');
   } catch (e) {
-    n.tx_error = e.code === 'ai_credits_needed' ? 'Needs AI credits in Neon' : 'Transcription failed'; await Store.put('voice', n);
-    if (!quiet || onRoute('voice')) toast(e.code === 'ai_credits_needed' ? 'Transcription needs AI credits in Neon (Billing → AI gateway credits).' : 'Transcription failed. Tap Transcribe to try again.');
+    n.tx_error = e.code === 'ai_credits_needed' ? 'Needs credits, or download free voice-to-text in Control Centre' : 'Transcription failed'; await Store.put('voice', n);
+    if (!quiet || onRoute('voice')) toast(e.code === 'ai_credits_needed' ? 'Cloud transcription needs credits. Download free voice-to-text in Control Centre instead.' : 'Transcription failed. Tap Transcribe to try again.');
   } finally { transcribing.delete(id); if (onRoute('voice')) renderVoice(); }
 }
 /* Live transcription while recording: raw audio is tapped in parallel with the recorder
    (no second microphone request, so it is safe on iPhone), cut into ~6 s WAV segments
    and transcribed by your server. Text appears a few seconds behind your voice. */
 const Live = { proc: null, sink: null, buf: [], rate: 48000, timer: null, text: '', busy: false, queue: [], on: false };
+function f32ToWav(d) {
+  const wav = new DataView(new ArrayBuffer(44 + d.length * 2)); const w = (p, s) => { for (let i = 0; i < s.length; i++) wav.setUint8(p + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); wav.setUint32(4, 36 + d.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 1, true); wav.setUint32(24, 16000, true); wav.setUint32(28, 32000, true); wav.setUint16(32, 2, true); wav.setUint16(34, 16, true); w(36, 'data'); wav.setUint32(40, d.length * 2, true);
+  for (let i = 0; i < d.length; i++) { const v = Math.max(-1, Math.min(1, d[i])); wav.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+  return new Blob([wav.buffer], { type: 'audio/wav' });
+}
+function pcmTo16k(chunks, inRate) {
+  let len = 0; for (const c of chunks) len += c.length; if (!len) return null;
+  const all = new Float32Array(len); let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+  const ratio = inRate / 16000, outLen = Math.floor(len / ratio); const d = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) { const a = Math.floor(i * ratio), b = Math.min(len, Math.floor((i + 1) * ratio)); let s = 0; for (let j = a; j < b; j++) s += all[j]; d[i] = s / Math.max(1, b - a); }
+  let peak = 0; for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i])); return peak < 0.012 ? null : d; // silence: skip
+}
 function pcmToWav16k(chunks, inRate) {
   let len = 0; for (const c of chunks) len += c.length; if (!len) return null;
   const all = new Float32Array(len); let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
@@ -866,8 +1010,8 @@ function pcmToWav16k(chunks, inRate) {
   return new Blob([wav.buffer], { type: 'audio/wav' });
 }
 function liveStart(ac, src) {
-  Live.text = ''; Live.buf = []; Live.queue = []; Live.on = Providers.gateway.available();
-  showLive(Live.on ? '' : (Cap.online ? 'Live text needs your AI connection. The recording is still saved.' : 'Offline: the recording is saved and will be transcribed when you’re back online.'), !Live.on);
+  Live.text = ''; Live.buf = []; Live.queue = []; Live.local = asrReady(); Live.on = Live.local || Providers.gateway.available();
+  showLive(Live.on ? '' : 'For live text without credits or internet, download voice-to-text in Control Centre. The recording is still saved.', !Live.on);
   if (!Live.on || !ac.createScriptProcessor) return;
   Live.rate = ac.sampleRate; Live.proc = ac.createScriptProcessor(4096, 1, 1); Live.sink = ac.createGain(); Live.sink.gain.value = 0;
   Live.proc.onaudioprocess = (e) => { if (!Rec.paused) Live.buf.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
@@ -875,8 +1019,9 @@ function liveStart(ac, src) {
   Live.timer = setInterval(liveFlush, 6000);
 }
 function liveFlush(final) {
+  if (Live.local) { const f = pcmTo16k(Live.buf, Live.rate); Live.buf = []; if (!f) return Promise.resolve(); const job = asrRun(f).then((t) => { if (t) { Live.text += (Live.text ? ' ' : '') + t; showLive(Live.text); } }).catch(() => {}); Live.queue.push(job); return job; }
   const wav = pcmToWav16k(Live.buf, Live.rate); Live.buf = []; if (!wav) return Promise.resolve();
-  const job = (async () => { try { const t = (await Providers.gateway.transcribe(wav)).replace(/^\[no speech\]$/i, '').trim(); if (t) { Live.text += (Live.text ? ' ' : '') + t; showLive(Live.text); } } catch (e) { if (e && e.code === 'ai_credits_needed') { Live.on = false; clearInterval(Live.timer); showLive('Live text needs AI credits in Neon. The recording is still saved.', true); } } })();
+  const job = (async () => { try { const t = (await Providers.gateway.transcribe(wav)).replace(/^\[no speech\]$/i, '').trim(); if (t) { Live.text += (Live.text ? ' ' : '') + t; showLive(Live.text); } } catch (e) { if (e && e.code === 'ai_credits_needed') { Live.on = false; clearInterval(Live.timer); showLive('Live text needs credits. Download free voice-to-text in Control Centre. The recording is still saved.', true); } } })();
   Live.queue.push(job); return job;
 }
 async function liveStop() {
@@ -1120,10 +1265,12 @@ async function openDraft(id) {
       if (await draftHash(d) !== d.approved_hash) { toast('Content changed since approval: approve again'); d.status = 'draft'; await Store.put('drafts', d); close(); return renderApprovals(); }
       const gmail = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(d.to)}&su=${encodeURIComponent(d.subject)}&body=${encodeURIComponent(d.body)}`;
       close();
-      sheet(`<h2>Submit “${esc(d.title)}”</h2><p class="muted">Direct sending from JLn Evolve needs the Gmail connection (Phase 7). For now you send it yourself:</p>
-        ${d.kind === 'email' ? `<a class="btn primary" href="${esc(gmail)}" target="_blank" rel="noopener">Open in Gmail compose</a> ` : ''}<button class="btn" id="scopy">${icon('copy', 16)} Copy text</button>
+      sheet(`<h2>Submit “${esc(d.title)}”</h2><p class="muted">JLn Evolve never sends for you. Put it in Gmail, check it there, and press Send yourself.</p>
+        ${d.gmail_draft_id ? `<p class="faint">Already saved to Gmail Drafts ${fmtDate(d.gmail_saved_at)}.</p>` : ''}<button class="btn primary" id="sgmail">${icon('mail', 16)} ${d.gmail_draft_id ? 'Save to Gmail Drafts again' : 'Save to Gmail Drafts'}</button>
+        ${d.kind === 'email' ? `<a class="btn" href="${esc(gmail)}" target="_blank" rel="noopener">Open in Gmail compose</a> ` : ''}<button class="btn" id="scopy">${icon('copy', 16)} Copy text</button>
         <p class="faint" style="margin-top:16px">Only mark it submitted after you have actually sent it. The app never records a send it did not see.</p>
         <div class="row"><button class="btn" id="sdone">I sent it — mark submitted</button><button class="btn ghost" data-close>Not yet</button></div>`, (el2, close2) => {
+        $('#sgmail', el2).onclick = () => { close2(); saveToGmailDrafts(d.id); };
         $('#scopy', el2).onclick = async () => { try { await navigator.clipboard.writeText(`${d.subject}\n\n${d.body}`); toast('Copied'); } catch { toast('Copy is blocked here'); } };
         $('#sdone', el2).onclick = async () => { d.status = 'submitted'; d.submitted_at = now(); await Store.put('drafts', d); await log('owner', 'draft.submitted_by_owner', d.title); close2(); renderApprovals(); };
       });
@@ -1144,7 +1291,7 @@ async function renderActivity() {
 
 
 const CONNECTIONS = [
-  ['Gmail', 'g-write', 'mail', 'Draft letters and replies', 'Partly live', 'warn', 'Drafts are written here and open in Gmail ready to send with one tap (Approvals → Submit). Next: save drafts straight into your Gmail Drafts folder, which needs a one-time Google sign-in.'],
+  ['Gmail', 'g-write', 'mail', 'Draft letters and replies', S.googleClientId ? 'Live' : 'Ready to set up', S.googleClientId ? 'good' : 'warn', 'Approved drafts are saved straight into your Gmail Drafts folder (Approvals → Submit → Save to Gmail Drafts). You always press Send yourself. Setup: Control Centre → Gmail drafts.'],
   ['Google Calendar', 'g-task', 'calendar', 'See meetings, prepare and schedule', 'Planned', '', 'Needs the same Google sign-in as Gmail. Then your briefing and Home show real meetings, and I can propose events for your approval.'],
   ['Teams and Zoom minutes', 'g-chat', 'text', 'Minutes, decisions and action items', 'Live', 'good', 'Works today: record the meeting on your phone in Voice (or import the Teams/Zoom transcript file into the Vault), then tap Meeting minutes. A bot that joins calls by itself needs a paid meeting-bot service and Microsoft/Zoom app approval.'],
   ['Canva', 'g-memory', 'palette', 'Designs from a brief', 'Planned', '', 'Needs a Canva developer app (Canva Connect) linked to your Canva account. Until then, the Creative agent writes the full design brief, copy and layout for you to paste into Canva.'],
@@ -1178,6 +1325,8 @@ async function renderControl() {
       <div class="row"><button class="btn small primary" id="csavegw">Save</button><button class="btn small" id="ctest">Test connection</button><span class="faint" id="ctestout"></span></div>
       <div class="row" style="margin-top:16px"><div class="grow"><h3>Local only</h3><div class="faint">Never send anything to cloud AI. Uses On-device AI below.</div></div><label class="switch"><input type="checkbox" id="cloc" ${S.localOnly ? 'checked' : ''} aria-label="Local only"><i></i></label></div></div>
     ${localCardHTML()}
+    ${asrCardHTML()}
+    ${gmailCardHTML()}
     <div class="card"><h3>Reminders</h3><p class="faint" style="margin:2px 0 10px">${notifOK() ? 'Notifications are on. Reminders appear while JLn Evolve is open on this device.' : 'Allow notifications so reminders can alert you. On iPhone this works once the app is on your Home Screen.'}</p>${'Notification' in window && !notifOK() ? '<button class="btn" id="cnotif">' + icon('bell', 15) + ' Allow notifications</button>' : ''}</div>
     <div class="card"><h3>Voice</h3><div class="row" style="margin-top:8px"><div class="grow">Read replies aloud</div><label class="switch"><input type="checkbox" id="cspk" ${S.speakReplies ? 'checked' : ''} aria-label="Read replies aloud"><i></i></label></div></div>
     <div class="card" id="appearance"><h3>Appearance</h3><p class="faint" style="margin:2px 0 10px">Pick a theme, or let it follow your phone's light and dark setting.</p>
@@ -1197,7 +1346,7 @@ async function renderControl() {
   $('#csavep').onclick = async () => { await setSetting('name', $('#cname').value.trim() || 'Joshua'); await setSetting('writingDna', $('#cdna').value.trim()); await log('owner', 'profile.updated', ''); toast('Profile saved'); };
   $('#csavegw').onclick = async () => { await setSetting('gatewayUrl', $('#cgw').value.trim()); await setSetting('gatewayToken', $('#ctok').value.trim()); await log('owner', 'ai.gateway_set', $('#cgw').value.trim() ? 'configured' : 'cleared'); renderStatus(); toast('Saved'); };
   $('#ctest').onclick = async () => { const out = $('#ctestout'); out.textContent = 'Testing…'; try { await setSetting('gatewayUrl', $('#cgw').value.trim()); await setSetting('gatewayToken', $('#ctok').value.trim()); const r = await Providers.gateway.chat({ system: 'Reply with the single word OK.', messages: [{ role: 'user', content: 'ping' }] }); out.textContent = 'Connected · ' + (r.model || 'cloud'); renderStatus(); } catch (e) { out.textContent = 'Failed: ' + (e.code || e.message || 'network'); } };
-  bindLocalCard(renderControl);
+  bindLocalCard(renderControl); bindAsrCard(renderControl); bindGmailCard(renderControl);
   $('#cloc').onchange = async (e) => { await setSetting('localOnly', e.target.checked); await log('owner', 'ai.local_only', String(e.target.checked)); renderStatus(); };
   const cn = $('#cnotif'); if (cn) cn.onclick = async () => { try { const r = await Notification.requestPermission(); toast(r === 'granted' ? 'Reminders will notify you' : 'Notifications were not allowed'); } catch { toast('This browser can’t show notifications'); } renderControl(); };
   $('#cspk').onchange = (e) => setSetting('speakReplies', e.target.checked);
@@ -1209,7 +1358,7 @@ async function renderControl() {
   $$('[data-pro]').forEach((b) => b.onclick = async () => { await setSetting('proactivity', b.dataset.pro); renderControl(); });
   $('#cq1').onchange = (e) => setSetting('quietStart', e.target.value); $('#cq2').onchange = (e) => setSetting('quietEnd', e.target.value);
   const p = $('#cpers'); if (p) p.onclick = async () => { const ok = await navigator.storage.persist(); toast(ok ? 'Storage protected' : 'The browser declined; install the app to the home screen and try again'); renderControl(); };
-  $('#cexp').onclick = async () => { const out = {}; for (const s of STORES) if (s !== 'voice') out[s] = await Store.all(s); out.voice = (await Store.all('voice')).map(({ audio, url, ...v }) => v); out.settings = out.settings.filter((r) => r.id !== 'gatewayToken'); await log('owner', 'data.exported', ''); exportJSON(out, 'jln-evolve-backup'); };
+  $('#cexp').onclick = async () => { const out = {}; for (const s of STORES) if (s !== 'voice') out[s] = await Store.all(s); out.voice = (await Store.all('voice')).map(({ audio, url, ...v }) => v); out.settings = out.settings.filter((r) => !['gatewayToken', 'gmailToken', 'gAuthState'].includes(r.id)); await log('owner', 'data.exported', ''); exportJSON(out, 'jln-evolve-backup'); };
   $('#cimp').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; try { const data = JSON.parse(await f.text()); let n = 0; for (const s of STORES) if (Array.isArray(data[s])) for (const row of data[s]) { if (row && row.id) { await Store.put(s, row); n++; } } await log('owner', 'data.imported', n + ' records'); toast(`Imported ${n} records`); await loadSettings(); renderControl(); } catch { toast('That file is not a JLn Evolve backup'); } };
   $('#cwipe').onclick = () => sheet(`<h2>Delete all data?</h2><p class="muted">This removes every task, note, conversation, memory, draft, recording and setting from this device. Export first if you want a copy. This cannot be undone.</p><div class="row"><button class="btn danger" id="wyes">Delete everything</button><button class="btn" data-close>Cancel</button></div>`, (el, close) => { $('#wyes', el).onclick = async () => { for (const s of STORES) await Store.clear(s); lastHash = null; Object.assign(S, DEFAULTS); await log('owner', 'data.wiped', ''); close(); location.hash = 'home'; route(); toast('All data deleted'); }; });
 }
@@ -1242,7 +1391,9 @@ function renderStatusPage() {
     ['Web research with sources (Google Search via Gemini)', 'Implemented, needs AI credits', 'accent'],
     ['Meeting minutes from recordings or Teams/Zoom transcripts', 'Implemented, needs AI credits', 'accent'],
     ['Reminders, task commands in plain English (no AI needed)', 'Implemented and tested', 'good'],
-    ['Gmail drafts folder, Google Calendar, Canva', 'Planned — needs your sign-in', ''],
+    ['Gmail: save approved drafts to your Drafts folder (never sends)', 'Implemented; needs your Google Client ID', 'accent'],
+    ['Voice-to-text on the phone (Whisper): free, offline, live text', 'Implemented; iPhone test pending', 'accent'],
+    ['Google Calendar, Canva', 'Planned — needs your sign-in', ''],
     ['Finance and Travel agents, Ewe', 'Planned — after v1', ''],
   ];
   if (!onRoute('status')) return;
@@ -1268,6 +1419,7 @@ window.addEventListener('hashchange', () => { window.scrollTo(0, 0); route(); })
 /* ---------- boot ---------- */
 async function boot() {
   await Store.open(); await loadSettings();
+  await gmailHandleReturn();
   const m = location.hash.match(/^#key-([A-Za-z0-9_-]{24,128})$/);
   if (m) { await setSetting('gatewayToken', m[1]); syncManifest(); try { history.replaceState(null, '', location.pathname + '#home'); } catch { location.hash = 'home'; } await log('owner', 'device.connected', 'setup link'); setTimeout(() => toast('This device is connected to your AI'), 400); }
   if (!(await Store.all('activity')).length) await log('system', 'app.first_run', 'v' + VERSION);
