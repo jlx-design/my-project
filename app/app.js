@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -298,7 +298,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=0.6.1', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=0.6.2', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -324,7 +324,7 @@ async function installAsr(rerender) {
     toast('Voice-to-text on this phone is ready'); if (onRoute('control')) rerender();
   } catch (e) {
     Asr.prog = null; try { Asr.worker && Asr.worker.terminate(); } catch {} Asr.worker = null;
-    const why = String((e && e.message) || e || 'unknown').slice(0, 160); await setSetting('asrError', why); await log('system', 'local_voice.failed', why);
+    const why = String((e && e.message) || e || 'unknown').slice(0, 400); await setSetting('asrError', why); await log('system', 'local_voice.failed', why);
     const m = Cap.online ? 'Voice-to-text couldn’t finish setting up. Tap Download to try again; parts already downloaded are kept.' : 'Connect to the internet once to download voice-to-text.';
     toast(m); const t = $('#atext'); if (t) t.textContent = m; const b = $('#abtns'); if (b) b.style.display = '';
   }
