@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -113,7 +113,7 @@ async function logNow(actor, event, detail = '') {
 }
 
 /* ---------- settings ---------- */
-const DEFAULTS = { speakMode: '', personality: 'natural', voiceURI: '', voiceName: '', voiceRate: 1, voicePitch: 1, voiceFilter: 'all', voiceMode: 'instant', localModel: '', localReady: false, connectHidden: false, asrReady: false, asrError: '', googleClientId: '', gmailToken: '', gmailExp: 0, gAuthState: '', gPending: '', name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
+const DEFAULTS = { voiceEngine: 'device', naturalVoice: 'af_heart', ttsReady: false, ttsError: '', ttsRtf: 0, speakMode: '', personality: 'natural', voiceURI: '', voiceName: '', voiceRate: 1, voicePitch: 1, voiceFilter: 'all', voiceMode: 'instant', localModel: '', localReady: false, connectHidden: false, asrReady: false, asrError: '', googleClientId: '', gmailToken: '', gmailExp: 0, gAuthState: '', gPending: '', name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
 const S = { ...DEFAULTS };
 async function loadSettings() { const rows = await Store.all('settings'); rows.forEach((r) => { S[r.id] = r.value; }); if (S.theme !== 'auto' && !THEMES.some((t) => t[0] === S.theme)) S.theme = 'daylight'; applyTheme(); }
 async function setSetting(key, value) { S[key] = value; await Store.put('settings', { id: key, value }); if (['theme', 'lightTheme', 'darkTheme', 'accent', 'size'].includes(key)) applyTheme(); }
@@ -323,7 +323,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=1.1.0', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=1.2.0', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -356,7 +356,7 @@ async function installAsr(rerender) {
 }
 async function removeAsr() {
   try { if (Asr.worker) Asr.worker.terminate(); } catch {} Asr.worker = null;
-  try { if (window.caches) await caches.delete('transformers-cache'); } catch {}
+  try { const c = await caches.open('transformers-cache'); for (const k of await c.keys()) if (/whisper/i.test(k.url)) await c.delete(k); } catch {}
   await setSetting('asrReady', false); await log('owner', 'local_voice.removed', ASR_MODEL);
 }
 function asrCardHTML() {
@@ -845,6 +845,11 @@ const Speaker = {
   speak(text, opts = {}) {
     const s = synth(); const spoken = toSpeech(text, opts.max);
     if (!spoken) return Promise.resolve();
+    if (naturalOn() && !opts.device) {
+      this.stop(true); const my = ++this.gen; this.speaking = true; VoiceState.set('speaking'); const voice = naturalName()[0];
+      return speakNatural(spoken, my, voice).then(() => { if (my === this.gen) { this.speaking = false; VoiceState.set('idle'); opts.onEnd && opts.onEnd(); } })
+        .catch((e) => { if (my !== this.gen) return; this.speaking = false; setSetting('ttsError', String((e && e.message) || e).slice(0, 300)); toast('The human-like voice had a problem, so the iPhone voice is speaking.'); return this.speak(text, { ...opts, device: true }); });
+    }
     if (Cap.claude.tts && !s) { Cap.claude.tts.speak(spoken).catch(() => {}); return Promise.resolve(); }
     if (!s) { toast('Speaking isn’t supported in this browser'); return Promise.resolve(); }
     this.stop(true); const my = ++this.gen; const v = chosenVoice(); const parts = sentences(spoken);
@@ -863,7 +868,7 @@ const Speaker = {
       next();
     });
   },
-  stop(silent) { const s = synth(); this.gen++; const was = this.speaking; this.speaking = false; try { s && s.cancel(); } catch {} if (Cap.claude.tts && Cap.claude.tts.stop) { try { Cap.claude.tts.stop(); } catch {} } if (was && !silent) VoiceState.set('idle'); },
+  stop(silent) { const s = synth(); this.gen++; if (this.src) { try { this.src.onended = null; this.src.stop(); } catch {} this.src = null; } const was = this.speaking; this.speaking = false; try { s && s.cancel(); } catch {} if (Cap.claude.tts && Cap.claude.tts.stop) { try { Cap.claude.tts.stop(); } catch {} } if (was && !silent) VoiceState.set('idle'); },
 };
 // iPhone only lets a page speak after a tap: say nothing once on the first tap so later replies can be heard.
 document.addEventListener('pointerdown', function unlockSpeech() { const s = synth(); if (s) { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; s.speak(u); } catch {} } document.removeEventListener('pointerdown', unlockSpeech); }, { passive: true });
@@ -887,6 +892,7 @@ function voiceCardHTML() {
   const row = (v) => `<div class="item vrow ${cur && cur.voiceURI === v.voiceURI ? 'on' : ''}" data-vuri="${esc(v.voiceURI)}"><button class="grow vpick" style="all:unset;cursor:pointer;flex:1;min-width:0" aria-pressed="${cur && cur.voiceURI === v.voiceURI}"><div class="title">${esc(v.name.replace(/\s*\((enhanced|premium)\)/i, ''))} ${voiceQuality(v) ? `<span class="tag">${voiceQuality(v)}</span>` : ''}</div><div class="meta">${g[voiceGender(v)]}, ${esc(langLabel(v.lang))}${qRank(v) ? '' : ', basic'}${v.localService === false ? ', needs internet' : ''}</div></button><button class="btn small vprev" aria-label="Preview ${esc(v.name)}">${icon('play', 14)} Preview</button></div>`;
   return `<div class="card" id="voicecard"><div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="glyph g-voice">${icon('speaker')}</span><div class="grow"><h3>Voice &amp; personality</h3>
     <p class="faint" style="margin:2px 0 10px">How JLn Evolve sounds when it talks to you. iPhone voices are free and work offline.</p></div></div>
+    <div class="setting-row" style="display:block">${naturalSectionHTML()}</div>
     <div class="setting-row" style="display:block"><div style="margin-bottom:6px">Speak replies</div><div class="segmented">${[['off', 'Off'], ['voice', 'When I speak'], ['always', 'Always']].map(([k, l]) => `<button class="${speakMode() === k ? 'on' : ''}" data-spm="${k}">${l}</button>`).join('')}</div></div>
     <div class="setting-row" style="display:block"><div style="margin-bottom:6px">Personality</div><div class="segmented" style="flex-wrap:wrap">${Object.entries(PERSONALITIES).map(([k, [l]]) => `<button class="${(S.personality || 'natural') === k ? 'on' : ''}" data-pers="${k}">${l}</button>`).join('')}</div></div>
     <div class="setting-row" style="display:block"><div class="row" style="margin-bottom:6px"><div class="grow">Voice${cur ? `: <strong>${esc(cur.name.replace(/\s*\((enhanced|premium)\)/i, ''))}</strong>` : ''}</div><div class="segmented">${[['all', 'All'], ['female', 'Female'], ['male', 'Male']].map(([k, l]) => `<button class="${filt === k ? 'on' : ''}" data-vf="${k}">${l}</button>`).join('')}</div></div>
@@ -904,7 +910,7 @@ async function voiceSheet() {
   const body = () => {
     const vs = englishVoices(); const cur = vs.length ? chosenVoice() : null;
     const shown = vs.filter((v) => filt === 'all' || voiceGender(v) === filt).sort((a, b) => (voiceQuality(b) ? 1 : 0) - (voiceQuality(a) ? 1 : 0) || a.name.localeCompare(b.name));
-    return `<h2>Choose a voice</h2><p class="muted" style="margin-top:-6px">Tap a voice to use it. Tap Preview to listen first.</p>
+    return `<h2>Choose a voice</h2>${naturalSectionHTML()}<h3 style="margin:18px 0 4px">iPhone voices</h3><p class="muted" style="margin-top:0">${naturalOn() ? 'Used only if the human-like voice can’t speak.' : 'Tap a voice to use it. Tap Preview to listen first.'}</p>
       ${hasNatural() ? '' : `<div class="notice" style="margin:0 0 10px"><strong>These are basic voices, so they sound robotic.</strong> Your iPhone has natural ones for free: open <strong>Settings → Accessibility → Read &amp; Speak</strong> (or <strong>Spoken Content</strong>) <strong>→ Voices → English</strong>, choose a voice such as <strong>Ava</strong>, <strong>Zoe</strong>, <strong>Daniel</strong> or <strong>Arthur</strong>, and download the <strong>Premium</strong> or <strong>Enhanced</strong> version. Then close and reopen JLn Evolve; it switches to the natural voice by itself.</div>`}
       <div class="segmented" style="margin:4px 0 10px">${[['all', 'All'], ['female', 'Female'], ['male', 'Male']].map(([k, l]) => `<button class="${filt === k ? 'on' : ''}" data-vf2="${k}">${l}</button>`).join('')}</div>
       <div class="list" style="max-height:52vh;overflow:auto">${shown.map((v) => `<div class="item vrow ${cur && cur.voiceURI === v.voiceURI ? 'on' : ''}" data-vuri="${esc(v.voiceURI)}"><button class="vpick" style="all:unset;cursor:pointer;flex:1;min-width:0"><div class="title">${cur && cur.voiceURI === v.voiceURI ? '✓ ' : ''}${esc(v.name.replace(/\s*\((enhanced|premium)\)/i, ''))} ${voiceQuality(v) ? `<span class="tag">${voiceQuality(v)}</span>` : ''}</div><div class="meta">${g[voiceGender(v)]}, ${esc(langLabel(v.lang))}${qRank(v) ? '' : ', basic'}</div></button><button class="btn small vprev">${icon('play', 14)} Preview</button></div>`).join('') || `<div class="empty">${vs.length ? 'No voices in this group.' : 'Your iPhone hasn’t shared its voices yet.'} <button class="btn small" id="vload">Load voices</button></div>`}</div>
@@ -915,8 +921,9 @@ async function voiceSheet() {
     const bind = () => {
       $$('[data-vf2]', el).forEach((b) => b.onclick = async () => { filt = b.dataset.vf2; await setSetting('voiceFilter', filt); el.innerHTML = body(); bind(); });
       $$('.vrow', el).forEach((r) => { const v = englishVoices().find((x) => x.voiceURI === r.dataset.vuri); if (!v) return;
-        $('.vpick', r).onclick = async () => { await setSetting('voiceURI', v.voiceURI); await setSetting('voiceName', v.name); warnedVoice = false; await log('owner', 'voice.chosen', v.name); el.innerHTML = body(); bind(); Speaker.speak(SAMPLE()); };
-        $('.vprev', r).onclick = () => { const k1 = S.voiceURI, k2 = S.voiceName; S.voiceURI = v.voiceURI; S.voiceName = v.name; Speaker.speak(SAMPLE()); S.voiceURI = k1; S.voiceName = k2; }; });
+        $('.vpick', r).onclick = async () => { await setSetting('voiceURI', v.voiceURI); await setSetting('voiceName', v.name); await setSetting('voiceEngine', 'device'); warnedVoice = false; await log('owner', 'voice.chosen', v.name); el.innerHTML = body(); bind(); Speaker.speak(SAMPLE()); };
+        $('.vprev', r).onclick = () => { const k1 = S.voiceURI, k2 = S.voiceName; S.voiceURI = v.voiceURI; S.voiceName = v.name; Speaker.speak(SAMPLE(), { device: true }); S.voiceURI = k1; S.voiceName = k2; }; });
+      bindNatural(el, () => { el.innerHTML = body(); bind(); });
       const lv = $('#vload', el); if (lv) lv.onclick = async () => { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth().speak(u); } catch {} await new Promise((r) => setTimeout(r, 800)); await waitVoices(); el.innerHTML = body(); bind(); };
     };
     bind();
@@ -928,19 +935,121 @@ async function voiceSheet() {
 try { const s0 = window.speechSynthesis; s0 && s0.addEventListener && s0.addEventListener('voiceschanged', () => { if (onRoute('control') && !$('#voicecard .vrow')) renderControl(); }); } catch {}
 const SAMPLE = () => `Hello ${S.name}. This is how I'll sound when I read your briefing or answer you.`;
 function bindVoiceCard(rerender) {
+  const vc = $('#voicecard'); if (vc) bindNatural(vc, rerender);
   $$('[data-spm]').forEach((b) => b.onclick = async () => { await setSetting('speakMode', b.dataset.spm); await setSetting('speakReplies', b.dataset.spm === 'always'); rerender(); });
   $$('[data-pers]').forEach((b) => b.onclick = async () => { await setSetting('personality', b.dataset.pers); await log('owner', 'voice.personality', b.dataset.pers); rerender(); });
   $$('[data-vf]').forEach((b) => b.onclick = async () => { await setSetting('voiceFilter', b.dataset.vf); rerender(); });
   $$('#vlist2 .vrow').forEach((r) => {
     const v = englishVoices().find((x) => x.voiceURI === r.dataset.vuri); if (!v) return;
-    $('.vpick', r).onclick = async () => { await setSetting('voiceURI', v.voiceURI); await setSetting('voiceName', v.name); warnedVoice = false; await log('owner', 'voice.chosen', v.name); rerender(); Speaker.speak(SAMPLE()); };
-    $('.vprev', r).onclick = () => { const keepU = S.voiceURI, keepN = S.voiceName; S.voiceURI = v.voiceURI; S.voiceName = v.name; Speaker.speak(SAMPLE()); S.voiceURI = keepU; S.voiceName = keepN; };
+    $('.vpick', r).onclick = async () => { await setSetting('voiceURI', v.voiceURI); await setSetting('voiceName', v.name); await setSetting('voiceEngine', 'device'); warnedVoice = false; await log('owner', 'voice.chosen', v.name); rerender(); Speaker.speak(SAMPLE()); };
+    $('.vprev', r).onclick = () => { const keepU = S.voiceURI, keepN = S.voiceName; S.voiceURI = v.voiceURI; S.voiceName = v.name; Speaker.speak(SAMPLE(), { device: true }); S.voiceURI = keepU; S.voiceName = keepN; };
   });
   const sl = (id, key, fmt) => { const el = $(id); if (!el) return; el.oninput = () => { $(id + '-v').textContent = fmt(Number(el.value)); }; el.onchange = async () => { await setSetting(key, Number(el.value)); Speaker.speak(SAMPLE()); }; };
   sl('#vrate', 'voiceRate', (x) => x.toFixed(2) + '×'); sl('#vpitch', 'voicePitch', (x) => x.toFixed(2));
   const h = $('#vhear'); if (h) h.onclick = () => Speaker.speak(SAMPLE());
   const lg = $('#vlang'); if (lg) lg.onchange = async () => { await setSetting('voiceLang', lg.value); toast('Saved'); };
 }
+/* ---------- Human-like voice (Kokoro on the phone). The iPhone voices stay as the fallback. ---------- */
+const NATURAL_VOICES = [
+  ['af_heart', 'Heart', 'female', 'American'], ['af_bella', 'Bella', 'female', 'American'], ['bf_emma', 'Emma', 'female', 'British'], ['bf_isabella', 'Isabella', 'female', 'British'],
+  ['am_michael', 'Michael', 'male', 'American'], ['am_fenrir', 'Fenrir', 'male', 'American'], ['bm_george', 'George', 'male', 'British'], ['bm_fable', 'Fable', 'male', 'British'],
+];
+const Natural = { worker: null, seq: 0, wait: new Map(), prog: null, onprog: null };
+function naturalClient() {
+  if (window.JLN_TTS_FACTORY) return window.JLN_TTS_FACTORY;
+  if (!Natural.worker) {
+    Natural.worker = new Worker('tts.js?v=1.2.0', { type: 'module' });
+    Natural.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Natural.onprog && Natural.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Natural.wait.get(m.id); if (!w) return; Natural.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'tts_failed'), { code: 'tts_failed' })); };
+    Natural.worker.onerror = (e) => { for (const w of Natural.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'voice worker error'), { code: 'tts_failed' })); Natural.wait.clear(); Natural.worker = null; };
+  }
+  const call = (msg) => new Promise((res, rej) => { const id = ++Natural.seq; Natural.wait.set(id, { res, rej }); Natural.worker.postMessage({ id, ...msg }); });
+  return { load: (onProg) => { Natural.onprog = onProg; return call({ type: 'load' }); }, run: async (text, voice, speed) => { const r = await call({ type: 'speak', text, voice, speed }); return { audio: r.audio, rate: r.rate, ms: r.ms }; } };
+}
+const naturalOn = () => S.voiceEngine === 'natural' && !!S.ttsReady;
+const naturalName = () => (NATURAL_VOICES.find((v) => v[0] === S.naturalVoice) || NATURAL_VOICES[0]);
+function audioOut() {
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
+  if (!Speaker.ac || Speaker.ac.state === 'closed') { Speaker.ac = new AC(); Speaker.an = Speaker.ac.createAnalyser(); Speaker.an.fftSize = 1024; Speaker.an.connect(Speaker.ac.destination); }
+  if (Speaker.ac.state === 'suspended') { try { Speaker.ac.resume(); } catch {} }
+  return Speaker.ac;
+}
+document.addEventListener('pointerdown', () => { if (naturalOn()) audioOut(); }, { passive: true });
+// shorter pieces start sooner: split long sentences at commas
+function speechChunks(t) { const out = []; for (const s of sentences(t)) { if (s.length <= 160) { out.push(s); continue; } let cur = ''; for (const part of s.split(/(?<=[,;:])\s+/)) { if ((cur + ' ' + part).length > 160 && cur) { out.push(cur.trim()); cur = part; } else cur += ' ' + part; } if (cur.trim()) out.push(cur.trim()); } return out; }
+async function speakNatural(spoken, my, voice) {
+  const ac = audioOut(); if (!ac) throw new Error('no audio');
+  const parts = speechChunks(spoken); const speed = Number(S.voiceRate) || 1;
+  const gen = (i) => naturalClient().run(parts[i], voice, speed);
+  let next = parts.length ? gen(0) : null; let played = 0, genMs = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const r = await next; if (my !== Speaker.gen) return;
+    genMs += r.ms || 0; played += r.audio.length / r.rate;
+    next = i + 1 < parts.length ? gen(i + 1) : null; // prepare the next piece while this one plays
+    await new Promise((resolve) => {
+      const buf = ac.createBuffer(1, r.audio.length, r.rate); buf.copyToChannel ? buf.copyToChannel(r.audio, 0) : buf.getChannelData(0).set(r.audio);
+      const src = ac.createBufferSource(); src.buffer = buf; src.connect(Speaker.an); Speaker.src = src;
+      src.onended = () => { Speaker.src = null; resolve(); };
+      try { src.start(); } catch { resolve(); }
+      document.dispatchEvent(new CustomEvent('jln:speech-word', { detail: { charIndex: 0 } }));
+    });
+    if (my !== Speaker.gen) return;
+  }
+  if (played > 0.5) { const rtf = genMs / 1000 / played; if (!S.ttsRtf || Math.abs(S.ttsRtf - rtf) > 0.1) setSetting('ttsRtf', Math.round(rtf * 100) / 100); }
+}
+async function installNatural(rerender) {
+  if (Natural.prog) return;
+  Natural.prog = { p: 0, total: 0 }; paintNatural();
+  try {
+    await naturalClient().load((p, total) => { Natural.prog.p = p; Natural.prog.total = total; paintNatural(); });
+    Natural.prog = null; await setSetting('ttsReady', true); await setSetting('ttsError', ''); await setSetting('voiceEngine', 'natural'); keepStorage();
+    await log('owner', 'natural_voice.installed', 'kokoro-82m');
+    toast('Human-like voice is ready'); rerender && rerender(); audioOut(); Speaker.speak(SAMPLE());
+  } catch (e) {
+    Natural.prog = null; try { Natural.worker && Natural.worker.terminate(); } catch {} Natural.worker = null;
+    const why = String((e && e.message) || e || 'unknown').slice(0, 300); await setSetting('ttsError', why); await log('system', 'natural_voice.failed', why);
+    toast(Cap.online ? 'The human-like voice couldn’t finish setting up. Tap Download to try again.' : 'Connect to the internet once to download the voice.');
+    rerender && rerender();
+  }
+}
+async function removeNatural() {
+  try { Natural.worker && Natural.worker.terminate(); } catch {} Natural.worker = null;
+  try { const c = await caches.open('transformers-cache'); for (const k of await c.keys()) if (/Kokoro/i.test(k.url)) await c.delete(k); } catch {}
+  await setSetting('ttsReady', false); await setSetting('voiceEngine', 'device'); await log('owner', 'natural_voice.removed', 'kokoro-82m');
+}
+function paintNatural() {
+  const pr = Natural.prog; const box = document.getElementById('nprog'); if (!box) return;
+  box.style.display = pr ? 'block' : 'none'; if (!pr) return;
+  const bar = document.getElementById('nbar'); if (bar) bar.style.width = Math.round(pr.p * 100) + '%';
+  const t = document.getElementById('ntext'); if (t) t.textContent = `Downloading the voice: ${Math.round(pr.p * 100)}%${pr.total ? ` of about ${Math.max(1, Math.round(pr.total / 1e6))} MB` : ''}. Keep the app open.`;
+  $$('.nbtn').forEach((b) => { b.disabled = true; });
+}
+function naturalSectionHTML() {
+  const ready = !!S.ttsReady; const on = naturalOn(); const cur = naturalName()[0];
+  const slow = S.ttsRtf && S.ttsRtf > 1.15;
+  return `<div class="natural">
+    <div class="row" style="flex-wrap:nowrap;align-items:flex-start"><div class="grow"><h3 style="margin:0">Human-like voices <span class="tag">AI</span></h3>
+    <p class="faint" style="margin:2px 0 8px">${ready ? 'Natural AI voices made on your phone: free, private and offline.' : 'Sounds like a real person. Free, runs on your phone, works offline. One-time download of about 90 MB.'}</p></div></div>
+    <div id="nprog" style="display:none"><div style="height:8px;border-radius:4px;background:var(--sunken);overflow:hidden"><div id="nbar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div></div><p class="faint" id="ntext" style="margin:6px 0 8px"></p></div>
+    ${ready ? `<div class="list">${NATURAL_VOICES.map(([id, nm, g, acc]) => `<div class="item vrow ${on && cur === id ? 'on' : ''}" data-nv="${id}"><button class="npick" style="all:unset;cursor:pointer;flex:1;min-width:0"><div class="title">${on && cur === id ? '✓ ' : ''}${nm}</div><div class="meta">${g === 'female' ? 'Female' : 'Male'}, ${acc}${id === 'af_heart' ? ', most natural' : ''}</div></button><button class="btn small nprev">${icon('play', 14)} Preview</button></div>`).join('')}</div>
+      <div class="row" style="margin-top:10px">${on ? '<button class="btn ghost nbtn" id="ndevice">Use iPhone voices instead</button>' : '<button class="btn primary nbtn" id="nuse">Use human-like voice</button>'}<button class="btn ghost danger nbtn" id="nremove">Remove</button></div>
+      ${slow ? `<p class="faint" style="margin:8px 0 0">On this phone the voice takes a moment to prepare each sentence (${S.ttsRtf}× real time), so there can be short pauses.</p>` : ''}`
+    : `<button class="btn primary nbtn" id="nget">Download human-like voice (about 90 MB)</button>
+      ${S.ttsError ? `<p class="faint" style="margin:8px 0 0">Last problem (send this to Claude): <code>${esc(S.ttsError)}</code></p>` : ''}`}
+  </div>`;
+}
+function bindNatural(root, rerender) {
+  paintNatural();
+  const b = (sel, fn) => { const x = root.querySelector(sel); if (x) x.onclick = fn; };
+  b('#nget', () => { audioOut(); installNatural(rerender); });
+  b('#nuse', async () => { audioOut(); await setSetting('voiceEngine', 'natural'); rerender(); Speaker.speak(SAMPLE()); });
+  b('#ndevice', async () => { await setSetting('voiceEngine', 'device'); rerender(); Speaker.speak(SAMPLE()); });
+  b('#nremove', async () => { await removeNatural(); toast('Human-like voice removed'); rerender(); });
+  root.querySelectorAll('[data-nv]').forEach((r) => {
+    r.querySelector('.npick').onclick = async () => { audioOut(); await setSetting('naturalVoice', r.dataset.nv); await setSetting('voiceEngine', 'natural'); await log('owner', 'voice.chosen', 'natural ' + r.dataset.nv); rerender(); Speaker.speak(SAMPLE()); };
+    r.querySelector('.nprev').onclick = () => { audioOut(); const k1 = S.naturalVoice, k2 = S.voiceEngine; S.naturalVoice = r.dataset.nv; S.voiceEngine = 'natural'; Speaker.speak(SAMPLE()); S.naturalVoice = k1; S.voiceEngine = k2; };
+  });
+}
+
 function speak(text) { return Speaker.speak(text); }
 /* ---------- The JLn Evolve orb: a glass sphere with an infinity core, drawn live with WebGL ----------
    Its look follows the real state of the agent (OrbHub). It sleeps when hidden, slows down when idle,
@@ -1081,13 +1190,14 @@ class Orb {
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; gl.viewport(0, 0, w, h); }
     const dt = Math.min(0.1, ((now - (this.lastDraw || now)) / 1000) || 0.016); this.lastDraw = now;
     // live loudness from the microphone while recording; otherwise speech/word pulses from OrbHub
-    if (Rec.analyser || OrbHub.analyser) { const a = Rec.analyser || OrbHub.analyser; const buf = this.ab || (this.ab = new Uint8Array(a.fftSize)); a.getByteTimeDomainData(buf); let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; } OrbHub.pulse(Math.min(1, Math.sqrt(sum / buf.length) * 4)); }
+    const liveAn = Speaker.src ? Speaker.an : (Rec.analyser || OrbHub.analyser);
+    if (liveAn) { const a = liveAn; const buf = this.ab || (this.ab = new Uint8Array(a.fftSize)); a.getByteTimeDomainData(buf); let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; } OrbHub.pulse(Math.min(1, Math.sqrt(sum / buf.length) * 4)); }
     const tg = this.target(); const k = snap ? 1 : Math.min(1, dt * 3.2);
     if (!this.cur) this.cur = JSON.parse(JSON.stringify(tg));
     const L = (x, y) => x + (y - x) * k; const C = this.cur;
     for (const key of ['glow', 'ring', 'part', 'orbit', 'spin', 'sat', 'live']) C[key] = L(C[key] == null ? tg[key] : C[key], tg[key]);
     // while speaking or thinking keep the energy moving even if the phone sends no word timing
-    if (!snap && (tg.s === 'speaking' || this.preview === 'speaking')) OrbHub.pulse(0.30 + 0.45 * Math.abs(Math.sin(now / 137) * Math.sin(now / 341)));
+    if (!snap && !Speaker.src && (tg.s === 'speaking' || this.preview === 'speaking')) OrbHub.pulse(0.30 + 0.45 * Math.abs(Math.sin(now / 137) * Math.sin(now / 341)));
     if (!snap && tg.s === 'thinking') OrbHub.pulse(0.12 + 0.12 * Math.abs(Math.sin(now / 420)));
     for (const key of ['a', 'b', 'rim']) C[key] = C[key].map((x, i) => L(x, tg[key][i]));
     OrbHub.amp *= Math.pow(0.08, dt); this.flashV *= Math.pow(0.15, dt);
@@ -2014,6 +2124,7 @@ function renderStatusPage() {
     ['Evolve companion: talk hands-free, answers aloud, listens again (replaces Chat)', 'Implemented; iPhone test pending', 'accent'],
     ['Orb with 8 live states', 'Implemented; iPhone test pending', 'accent'],
     ['Wake word (“Hey Evolve”) and listening in the background', 'Not possible in a web app on iPhone; needs the native app', ''],
+    ['Human-like AI voice on the phone (Kokoro, 8 voices)', 'Implemented; iPhone test pending', 'accent'],
     ['Google Calendar, Canva', 'Planned — needs your sign-in', ''],
     ['Finance and Travel agents, Ewe', 'Planned — after v1', ''],
   ];

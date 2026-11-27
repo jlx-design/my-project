@@ -38,7 +38,7 @@ server = subprocess.Popen([sys.executable, '-m', 'http.server', '8765', '--bind'
 time.sleep(1)
 try:
     with sync_playwright() as p:
-        b = p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--no-sandbox'])
+        b = p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--no-sandbox', '--autoplay-policy=no-user-gesture-required'])
         ctx = b.new_context(viewport={'width': 428, 'height': 926}, device_scale_factor=2, permissions=['microphone'])
         # Chromium has its own speech recognition; tests choose it explicitly with window.__fakeSR.
         ctx.add_init_script("""(() => { const Fake = window.__FakeSRFactory = (words) => { let i = 0; return class { constructor() { this.continuous = false; this.interimResults = false; this.lang = ''; window.__srLang = null; }
@@ -565,6 +565,34 @@ try:
             page.click('#lremove'); page.wait_for_selector('#localai #lstd')
         check('On-device AI warms up when the app opens, shows real progress, says "one moment", answers aloud; orb centred', t_companion_local_slow)
 
+        def t_human_voice():
+            fac = """window.__nat = []; window.JLN_TTS_FACTORY = { load: async (onProg) => { for (const p of [0.3, 0.7, 1]) { onProg(p, 92e6); await new Promise(r => setTimeout(r, 250)); } return {}; },
+              run: async (text, voice, speed) => { if (window.__natFail) throw new Error('boom'); window.__nat.push({ text, voice, speed }); const n = Math.round(24000 * (window.__natSec || 0.25)); const a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = 0.2 * Math.sin(i / 8); await new Promise(r => setTimeout(r, 60)); return { audio: a, rate: 24000, ms: 60 }; } };"""
+            page.goto(URL + '#control'); page.wait_for_selector('#voicecard #nget'); page.evaluate(fac)
+            page.click('#nget'); page.wait_for_selector('#ntext >> text=Downloading the voice', timeout=3000)
+            page.wait_for_selector('#voicecard [data-nv="af_heart"]', timeout=8000)
+            assert waitjs(page, "window.__nat.some(c => c.voice === 'af_heart')", 5), 'speaks a sample in the human-like voice'
+            page.evaluate("window.__spoken = []; window.__nat = []")
+            page.locator('#voicecard [data-nv="bm_george"] .npick').click(); page.wait_for_selector('#voicecard [data-nv="bm_george"].on')
+            assert waitjs(page, "window.__nat.some(c => c.voice === 'bm_george')", 5)
+            assert page.evaluate("window.__spoken.filter(u => u.text.trim().length > 2).length") == 0, 'iPhone voice not used'
+            # a conversation is answered in the human-like voice, the orb follows the real sound, Stop works
+            page.evaluate("localStorage.setItem('fakeSR', JSON.stringify([{t:'What should I focus on', f:true}]))"); page.goto(URL + '#evolve'); page.reload(); page.wait_for_selector('#c-orb [data-orb]'); page.evaluate(fac)
+            page.evaluate("window.JLN_END_SILENCE_MS = 400; window.JLN_NO_SPEECH_MS = 3000; window.__natSec = 2.5")
+            page.click('#c-orb')
+            assert waitjs(page, "window.__nat.length > 0 && document.documentElement.dataset.orbState === 'speaking'", 12), 'reply spoken by the human-like voice'
+            assert all(c['voice'] == 'bm_george' for c in page.evaluate('window.__nat'))
+            page.click('#c-orb'); assert waitjs(page, "document.documentElement.dataset.orbState !== 'speaking'", 3), 'tap stops the human-like voice'
+            page.click('#c-end')
+            # if the AI voice fails, the iPhone voice speaks instead
+            page.evaluate("window.__natFail = true; window.__spoken = []; window.__natSec = 0.25")
+            page.goto(URL + '#control'); page.wait_for_selector('#vhear'); page.click('#vhear')
+            assert waitjs(page, "window.__spoken.some(u => u.text.trim().length > 3)", 5), 'falls back to the iPhone voice'
+            page.evaluate("window.__natFail = false; localStorage.removeItem('fakeSR')")
+            page.click('#ndevice'); page.wait_for_selector('#voicecard #nuse')
+            page.screenshot(path=f'{SHOTS}/25-human-voice.png', full_page=True)
+        check('Human-like voice: download, choose (e.g. George), conversation spoken in it, Stop, fallback to iPhone voice', t_human_voice)
+
         def t_companion_fallback():
             # the iPhone refuses its speech recognition in Home Screen apps -> microphone + voice detection + on-phone speech-to-text
             page.goto(URL + '#control'); page.wait_for_selector('#localvoice')
@@ -612,6 +640,7 @@ try:
             page.evaluate("window.__spoken = []"); page.goto(URL + '#control'); page.wait_for_selector('#vhear'); page.click('#vhear')
             assert waitjs(page, "window.__spoken.some(u => u.voice === 'Karen (Premium)')", 3), 'chosen Karen is upgraded to Karen (Premium)'
         check('Natural voices: robotic basic voices explained; a downloaded Premium/Enhanced version is used automatically', t_natural_voice)
+
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]
