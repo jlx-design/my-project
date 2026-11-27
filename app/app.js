@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '1.0.2';
+const VERSION = '1.1.0';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -323,7 +323,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=1.0.2', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=1.1.0', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -796,7 +796,10 @@ const FEMALE = /\b(samantha|karen|moira|tessa|fiona|victoria|allison|ava|susan|z
 const MALE = /\b(daniel|alex|fred|aaron|arthur|gordon|oliver|tom|evan|nathan|rishi|lee|ralph|junior|albert|bruce|eddy|reed|rocko|grandpa|david|mark|george|guy|ryan|thomas|william|christopher|eric|james|male|jorge|diego|juan|luca|maged|xander|yuri|thomas|aaron|jamie|malcolm|oskar|felix|hattori|otoya|rocko)\b/i;
 const NOVELTY = /\b(bells|bubbles|bad news|good news|boing|cellos|jester|organ|superstar|trinoids|whisper|wobble|zarvox|bahh|deranged|hysterical|pipe organ)\b/i;
 const voiceGender = (v) => FEMALE.test(v.name) ? 'female' : MALE.test(v.name) ? 'male' : 'other';
-const voiceQuality = (v) => /premium/i.test(v.name) ? 'Premium' : /enhanced/i.test(v.name) ? 'Enhanced' : '';
+const voiceQuality = (v) => /premium/i.test(v.name + ' ' + v.voiceURI) ? 'Premium' : /enhanced/i.test(v.name + ' ' + v.voiceURI) ? 'Enhanced' : '';
+const qRank = (v) => ({ Premium: 2, Enhanced: 1 })[voiceQuality(v)] || 0;
+const baseName = (v) => v.name.replace(/\s*\((enhanced|premium)\)/i, '').trim();
+const hasNatural = () => englishVoices().some((v) => qRank(v) > 0);
 const langLabel = (l) => { try { return new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' }).of(l.replace('_', '-')); } catch { return l; } };
 const synth = () => window.speechSynthesis || null;
 function allVoices() { const s = synth(); return s ? s.getVoices().filter((v) => !NOVELTY.test(v.name)) : []; }
@@ -809,8 +812,14 @@ function waitVoices() {
 let warnedVoice = false;
 function chosenVoice() {
   const vs = englishVoices(); if (!vs.length) return null;
-  const want = vs.find((v) => v.voiceURI === S.voiceURI) || vs.find((v) => v.name === S.voiceName);
-  if (want) return want;
+  let want = vs.find((v) => v.voiceURI === S.voiceURI) || vs.find((v) => v.name === S.voiceName);
+  if (want) { // if a better version of the same voice is downloaded (Enhanced/Premium), use it
+    const better = vs.filter((v) => baseName(v) === baseName(want) && v.lang === want.lang && qRank(v) > qRank(want)).sort((a, b) => qRank(b) - qRank(a))[0];
+    return better || want;
+  }
+  const lang0 = (S.voiceLang || 'en-GB').toLowerCase();
+  const natural = vs.filter((v) => qRank(v) > 0).sort((a, b) => qRank(b) - qRank(a) || (b.lang.toLowerCase().replace('_', '-') === lang0) - (a.lang.toLowerCase().replace('_', '-') === lang0))[0];
+  if (natural) return natural;
   const lang = (S.voiceLang || 'en-GB').toLowerCase();
   const fb = vs.find((v) => v.lang.toLowerCase().replace('_', '-') === lang && v.localService) || vs.find((v) => v.lang.toLowerCase().startsWith(lang.slice(0, 2)) && v.default) || vs[0];
   if (S.voiceName && !warnedVoice) { warnedVoice = true; toast(`Your chosen voice (${S.voiceName}) isn’t available here. Using ${fb.name} instead.`); }
@@ -875,18 +884,48 @@ function voiceCardHTML() {
   const cur = vs.length ? chosenVoice() : null;
   const shown = vs.filter((v) => filt === 'all' || voiceGender(v) === filt).sort((a, b) => (voiceQuality(b) ? 1 : 0) - (voiceQuality(a) ? 1 : 0) || a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
   const g = { female: 'Female-sounding', male: 'Male-sounding', other: 'Voice' };
-  const row = (v) => `<div class="item vrow ${cur && cur.voiceURI === v.voiceURI ? 'on' : ''}" data-vuri="${esc(v.voiceURI)}"><button class="grow vpick" style="all:unset;cursor:pointer;flex:1;min-width:0" aria-pressed="${cur && cur.voiceURI === v.voiceURI}"><div class="title">${esc(v.name.replace(/\s*\((enhanced|premium)\)/i, ''))} ${voiceQuality(v) ? `<span class="tag">${voiceQuality(v)}</span>` : ''}</div><div class="meta">${g[voiceGender(v)]}, ${esc(langLabel(v.lang))}${v.localService === false ? ', needs internet' : ''}</div></button><button class="btn small vprev" aria-label="Preview ${esc(v.name)}">${icon('play', 14)} Preview</button></div>`;
+  const row = (v) => `<div class="item vrow ${cur && cur.voiceURI === v.voiceURI ? 'on' : ''}" data-vuri="${esc(v.voiceURI)}"><button class="grow vpick" style="all:unset;cursor:pointer;flex:1;min-width:0" aria-pressed="${cur && cur.voiceURI === v.voiceURI}"><div class="title">${esc(v.name.replace(/\s*\((enhanced|premium)\)/i, ''))} ${voiceQuality(v) ? `<span class="tag">${voiceQuality(v)}</span>` : ''}</div><div class="meta">${g[voiceGender(v)]}, ${esc(langLabel(v.lang))}${qRank(v) ? '' : ', basic'}${v.localService === false ? ', needs internet' : ''}</div></button><button class="btn small vprev" aria-label="Preview ${esc(v.name)}">${icon('play', 14)} Preview</button></div>`;
   return `<div class="card" id="voicecard"><div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="glyph g-voice">${icon('speaker')}</span><div class="grow"><h3>Voice &amp; personality</h3>
     <p class="faint" style="margin:2px 0 10px">How JLn Evolve sounds when it talks to you. iPhone voices are free and work offline.</p></div></div>
     <div class="setting-row" style="display:block"><div style="margin-bottom:6px">Speak replies</div><div class="segmented">${[['off', 'Off'], ['voice', 'When I speak'], ['always', 'Always']].map(([k, l]) => `<button class="${speakMode() === k ? 'on' : ''}" data-spm="${k}">${l}</button>`).join('')}</div></div>
     <div class="setting-row" style="display:block"><div style="margin-bottom:6px">Personality</div><div class="segmented" style="flex-wrap:wrap">${Object.entries(PERSONALITIES).map(([k, [l]]) => `<button class="${(S.personality || 'natural') === k ? 'on' : ''}" data-pers="${k}">${l}</button>`).join('')}</div></div>
     <div class="setting-row" style="display:block"><div class="row" style="margin-bottom:6px"><div class="grow">Voice${cur ? `: <strong>${esc(cur.name.replace(/\s*\((enhanced|premium)\)/i, ''))}</strong>` : ''}</div><div class="segmented">${[['all', 'All'], ['female', 'Female'], ['male', 'Male']].map(([k, l]) => `<button class="${filt === k ? 'on' : ''}" data-vf="${k}">${l}</button>`).join('')}</div></div>
       <div class="list" id="vlist2" style="max-height:340px;overflow:auto">${shown.map(row).join('') || `<div class="empty">${vs.length ? 'No voices in this group.' : 'No voices found yet. Open this page again in a moment.'}</div>`}</div>
-      <p class="faint" style="margin:8px 0 0">Male and female labels come from the voice names. For more natural voices, download “Enhanced” or “Premium” ones in iPhone Settings → Accessibility → Spoken Content → Voices → English, then reopen JLn Evolve.</p></div>
+      <p class="faint" style="margin:8px 0 0">${hasNatural() ? 'Natural (Enhanced/Premium) voices are used first.' : '<strong>Basic voices sound robotic.</strong> For natural ones, download a <strong>Premium</strong> or <strong>Enhanced</strong> English voice (Ava, Zoe, Daniel, Arthur…) in iPhone Settings → Accessibility → Read &amp; Speak (or Spoken Content) → Voices, then reopen JLn Evolve.'} Male and female labels come from the voice names.</p></div>
     <div class="setting-row" style="display:block"><label class="row" style="flex-wrap:nowrap"><span style="width:64px">Speed</span><input type="range" id="vrate" min="0.7" max="1.4" step="0.05" value="${Number(S.voiceRate) || 1}" class="grow" aria-label="Speaking speed"><span class="faint" id="vrate-v" style="width:44px;text-align:right">${(Number(S.voiceRate) || 1).toFixed(2)}×</span></label>
       <label class="row" style="flex-wrap:nowrap;margin-top:8px"><span style="width:64px">Pitch</span><input type="range" id="vpitch" min="0.7" max="1.3" step="0.05" value="${Number(S.voicePitch) || 1}" class="grow" aria-label="Voice pitch"><span class="faint" id="vpitch-v" style="width:44px;text-align:right">${(Number(S.voicePitch) || 1).toFixed(2)}</span></label>
       <div class="row" style="margin-top:10px"><button class="btn" id="vhear">${icon('play', 14)} Hear it</button><label class="grow" style="text-align:right">Listening language <select class="input" id="vlang" style="width:auto;display:inline-block;margin-left:6px">${[['en-GB', 'English (UK)'], ['en-US', 'English (US)']].map(([k, l]) => `<option value="${k}" ${S.voiceLang === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div></div></div>`;
 }
+// The same voice list as a sheet, reachable from the orb screen
+async function voiceSheet() {
+  await waitVoices();
+  let filt = S.voiceFilter || 'all';
+  const g = { female: 'Female-sounding', male: 'Male-sounding', other: 'Voice' };
+  const body = () => {
+    const vs = englishVoices(); const cur = vs.length ? chosenVoice() : null;
+    const shown = vs.filter((v) => filt === 'all' || voiceGender(v) === filt).sort((a, b) => (voiceQuality(b) ? 1 : 0) - (voiceQuality(a) ? 1 : 0) || a.name.localeCompare(b.name));
+    return `<h2>Choose a voice</h2><p class="muted" style="margin-top:-6px">Tap a voice to use it. Tap Preview to listen first.</p>
+      ${hasNatural() ? '' : `<div class="notice" style="margin:0 0 10px"><strong>These are basic voices, so they sound robotic.</strong> Your iPhone has natural ones for free: open <strong>Settings → Accessibility → Read &amp; Speak</strong> (or <strong>Spoken Content</strong>) <strong>→ Voices → English</strong>, choose a voice such as <strong>Ava</strong>, <strong>Zoe</strong>, <strong>Daniel</strong> or <strong>Arthur</strong>, and download the <strong>Premium</strong> or <strong>Enhanced</strong> version. Then close and reopen JLn Evolve; it switches to the natural voice by itself.</div>`}
+      <div class="segmented" style="margin:4px 0 10px">${[['all', 'All'], ['female', 'Female'], ['male', 'Male']].map(([k, l]) => `<button class="${filt === k ? 'on' : ''}" data-vf2="${k}">${l}</button>`).join('')}</div>
+      <div class="list" style="max-height:52vh;overflow:auto">${shown.map((v) => `<div class="item vrow ${cur && cur.voiceURI === v.voiceURI ? 'on' : ''}" data-vuri="${esc(v.voiceURI)}"><button class="vpick" style="all:unset;cursor:pointer;flex:1;min-width:0"><div class="title">${cur && cur.voiceURI === v.voiceURI ? '✓ ' : ''}${esc(v.name.replace(/\s*\((enhanced|premium)\)/i, ''))} ${voiceQuality(v) ? `<span class="tag">${voiceQuality(v)}</span>` : ''}</div><div class="meta">${g[voiceGender(v)]}, ${esc(langLabel(v.lang))}${qRank(v) ? '' : ', basic'}</div></button><button class="btn small vprev">${icon('play', 14)} Preview</button></div>`).join('') || `<div class="empty">${vs.length ? 'No voices in this group.' : 'Your iPhone hasn’t shared its voices yet.'} <button class="btn small" id="vload">Load voices</button></div>`}</div>
+      <p class="faint" style="margin:10px 0 0">More natural voices: iPhone Settings → Accessibility → Spoken Content → Voices → English. Download one, then reopen JLn Evolve.</p>
+      <div class="row" style="margin-top:12px"><button class="btn primary" data-close>Done</button></div>`;
+  };
+  sheet(body(), (el) => {
+    const bind = () => {
+      $$('[data-vf2]', el).forEach((b) => b.onclick = async () => { filt = b.dataset.vf2; await setSetting('voiceFilter', filt); el.innerHTML = body(); bind(); });
+      $$('.vrow', el).forEach((r) => { const v = englishVoices().find((x) => x.voiceURI === r.dataset.vuri); if (!v) return;
+        $('.vpick', r).onclick = async () => { await setSetting('voiceURI', v.voiceURI); await setSetting('voiceName', v.name); warnedVoice = false; await log('owner', 'voice.chosen', v.name); el.innerHTML = body(); bind(); Speaker.speak(SAMPLE()); };
+        $('.vprev', r).onclick = () => { const k1 = S.voiceURI, k2 = S.voiceName; S.voiceURI = v.voiceURI; S.voiceName = v.name; Speaker.speak(SAMPLE()); S.voiceURI = k1; S.voiceName = k2; }; });
+      const lv = $('#vload', el); if (lv) lv.onclick = async () => { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth().speak(u); } catch {} await new Promise((r) => setTimeout(r, 800)); await waitVoices(); el.innerHTML = body(); bind(); };
+    };
+    bind();
+    const onv = () => { if (el.isConnected) { el.innerHTML = body(); bind(); } else { try { synth().removeEventListener('voiceschanged', onv); } catch {} } };
+    try { synth() && synth().addEventListener('voiceschanged', onv); } catch {}
+  });
+}
+// iPhone often lists its voices a moment after the app opens: refresh the settings card when they arrive
+try { const s0 = window.speechSynthesis; s0 && s0.addEventListener && s0.addEventListener('voiceschanged', () => { if (onRoute('control') && !$('#voicecard .vrow')) renderControl(); }); } catch {}
 const SAMPLE = () => `Hello ${S.name}. This is how I'll sound when I read your briefing or answer you.`;
 function bindVoiceCard(rerender) {
   $$('[data-spm]').forEach((b) => b.onclick = async () => { await setSetting('speakMode', b.dataset.spm); await setSetting('speakReplies', b.dataset.spm === 'always'); rerender(); });
@@ -917,6 +956,8 @@ const ORB_STATES = {
   error:     [[1.00,0.70,0.28],[1.00,0.42,0.35],[1.00,0.75,0.45], 0.70, 0.0, 0.0, 0.0, 0.15, 1.0, 'Needs attention'],
   offline:   [[0.78,0.83,0.90],[0.62,0.70,0.82],[0.80,0.86,0.95], 0.45, 0.0, 0.0, 0.0, 0.12, 0.25, 'Offline'],
 };
+// how alive the orb is in each state (Siri-like motion, calmer when idle or offline)
+const ORB_LIVE = { idle: 0.45, listening: 0.95, thinking: 1, speaking: 1, executing: 0.85, success: 0.8, error: 0.3, offline: 0.12 };
 const OrbHub = {
   base: 'idle', flash: null, flashUntil: 0, listening: 0, executing: null, amp: 0, orbs: new Set(), timer: null,
   state() {
@@ -946,40 +987,52 @@ window.addEventListener('online', () => OrbHub.refresh()); window.addEventListen
 
 const ORB_VS = 'attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}';
 const ORB_FS = `precision highp float;
-uniform vec2 uRes;uniform float uT,uGlow,uRing,uAmp,uPart,uOrbit,uSpin,uSat,uFlash;uniform vec3 uA,uB,uRim;
+uniform vec2 uRes;uniform float uT,uGlow,uRing,uAmp,uPart,uOrbit,uSpin,uSat,uFlash,uLive;uniform vec3 uA,uB,uRim;
 float seg(vec2 p,vec2 a,vec2 b){vec2 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);return length(pa-ba*h);}
-vec3 lem(float t,float ang){float s=sin(t),c=cos(t),d=1.+s*s;vec3 q=vec3(.60*c/d,.60*s*c/d,.16*sin(2.*t));
+vec3 lem(float t,float ang,float w){float s=sin(t),c=cos(t),d=1.+s*s;vec3 q=vec3(.70*c/d,.70*s*c/d,.16*sin(2.*t)+w*sin(3.*t+uT*1.3));
   return vec3(q.x*cos(ang)+q.z*sin(ang),q.y*.92-q.x*sin(ang)*.08,-q.x*sin(ang)+q.z*cos(ang));}
 void main(){
   vec2 p=(gl_FragCoord.xy*2.-uRes)/min(uRes.x,uRes.y);
-  float R=.70+.012*sin(uT*.9)+uAmp*.035; float r=length(p);
-  vec3 mid=mix(uA,uB,.5); vec3 col=vec3(0.); float al=0.;
-  float halo=exp(-max(r-R,0.)*7.)*.30*uGlow*(1.+uAmp*.6); col+=mid*halo; al+=halo*.9;
-  for(int i=0;i<3;i++){float fi=float(i);float rr=R+.07+fi*.065+uAmp*.10*(1.-fi*.3)+.012*sin(uT*1.6+fi*1.7);
-    float ring=exp(-abs(r-rr)*110.)*uRing*(.55-.15*fi);col+=uA*ring;al+=ring;}
+  float r=length(p); float th=atan(p.y,p.x);
+  // breathing, liquid edge that ripples with the state and with the voice
+  float R=.68+.018*sin(uT*1.15)*(.4+uLive)+uAmp*.045;
+  float wob=uLive*(.013*sin(3.*th+uT*1.7)+.009*sin(5.*th-uT*2.3)+.005*sin(7.*th+uT*3.1))+uAmp*(.022*sin(4.*th+uT*6.)+.012*sin(6.*th-uT*8.3));
+  float Rw=R*(1.+wob);
+  vec3 mid=mix(uA,uB,.5+.5*sin(uT*.35)); vec3 col=vec3(0.); float al=0.;
+  float halo=exp(-max(r-Rw,0.)*6.)*.32*uGlow*(1.+uAmp*.8+.25*uLive*sin(uT*1.4)); col+=mid*halo; al+=halo*.9;
+  for(int i=0;i<3;i++){float fi=float(i);float rr=Rw+.07+fi*.065+uAmp*.12*(1.-fi*.3)+.015*sin(uT*1.6+fi*1.7);
+    float ring=exp(-abs(r-rr)*110.)*uRing*(.55-.15*fi)*(.8+.4*sin(th*2.+uT*2.+fi));col+=uA*ring;al+=ring;}
   for(int i=0;i<3;i++){float an=uT*1.3+float(i)*2.0944;vec2 op=vec2(cos(an)*(R+.12),sin(an)*(R+.12)*.32);
     float dt=(exp(-length(p-op)*40.)+exp(-length(p-op)*12.)*.25)*uOrbit*(.6+.4*sin(uT*3.+float(i)));col+=uA*dt;al+=dt;}
-  if(r<R+.01){
-    vec2 q=p/R; float z=sqrt(max(1.-dot(q,q),0.)); vec3 n=vec3(q,z);
+  if(r<Rw+.012){
+    vec2 q=p/Rw; float z=sqrt(max(1.-dot(q,q),0.)); vec3 n=vec3(q,z);
     vec3 inner=vec3(.015,.03,.07)+mix(uB,uA,q.y*.5+.5)*.06*(1.-z*.5);
     vec2 cq=q*(1.+.20*(1.-z));
-    float ang=.42*sin(uT*uSpin*1.3)+.10*sin(uT*.37); float best=9.,bt=0.; vec3 prev=lem(0.,ang);
-    for(int k=1;k<=48;k++){float t=float(k)/48.*6.28318;vec3 cur=lem(t,ang);float d=seg(cq,prev.xy,cur.xy);if(d<best){best=d;bt=t;}prev=cur;}
+    // flowing light inside the glass: two drifting glows and a slow swirl
+    vec2 w1=vec2(cos(uT*.71),sin(uT*.93))*.38; vec2 w2=vec2(cos(uT*.53+2.1),sin(uT*.61+1.3))*.42;
+    float b1=exp(-dot(cq-w1,cq-w1)*4.5), b2=exp(-dot(cq-w2,cq-w2)*5.5);
+    float sw=.5+.5*sin(3.*atan(cq.y,cq.x)+length(cq)*7.-uT*(.6+1.6*uLive));
+    inner+=(uA*b1*.30+uB*b2*.28)*(.35+uLive)+mid*sw*.045*(.4+uLive)*(1.-z*.3);
+    float ang=(.40+.22*uLive)*sin(uT*uSpin*1.3)+.12*sin(uT*.37); float best=9.,bt=0.; vec3 prev=lem(0.,ang,.05*uLive);
+    for(int k=1;k<=48;k++){float t=float(k)/48.*6.28318;vec3 cur=lem(t,ang,.05*uLive);float d=seg(cq,prev.xy,cur.xy);if(d<best){best=d;bt=t;}prev=cur;}
     float depth=.6+.4*sin(bt*2.+ang);
     float strand=.75+.25*sin(bt*9.-uT*2.2);
+    // light running along the infinity
+    float comet=pow(.5+.5*cos((bt-uT*(.7+1.8*uLive))*2.),10.);
     float band=smoothstep(.065,.0,best); float strands=.55+.45*sin(best*170.-uT*1.5);
-    float core=(exp(-best*30.)*1.05+exp(-best*7.)*.42+band*strands*.38)*strand*depth*(1.+uAmp*.9)*uGlow;
-    vec3 cc=mix(uA,uB,.5+.5*sin(bt+uT*.4));
-    inner+=cc*core+vec3(1.)*exp(-best*110.)*.30*uGlow;
-    inner+=mid*.06*(.5+.5*sin(q.x*7.+uT*.3)*sin(q.y*5.-uT*.2))*(1.-z*.4);
+    float core=(exp(-best*30.)*1.05+exp(-best*7.)*.42+band*strands*.38)*strand*depth*(1.+uAmp*1.1)*uGlow*(.55+.95*comet*(.5+uLive));
+    vec3 cc=mix(uA,uB,.5+.5*sin(bt+uT*(.4+.6*uLive)));
+    inner+=cc*core+vec3(1.)*exp(-best*110.)*.30*uGlow*(.6+.8*comet);
     if(uPart>.01){vec2 g=cq*13.+vec2(uT*.7,-uT*.45);vec2 id=floor(g);vec2 f=fract(g)-.5;float h=fract(sin(dot(id,vec2(12.9898,78.233)))*43758.5453);
       float sp=smoothstep(.07,.0,length(f-(vec2(fract(h*7.),fract(h*13.))-.5)*.6))*step(.80,h);inner+=uB*sp*uPart*.9;}
     vec3 L=normalize(vec3(-.55,.62,.56)); float fres=pow(1.-z,3.);
     float spec=pow(max(dot(reflect(-L,n),vec3(0.,0.,1.)),0.),80.);
     float arc=smoothstep(.02,.0,abs(length(q-vec2(.04,-.04))-.86))*smoothstep(.3,.9,-q.x+q.y);
     float low=smoothstep(.04,.0,abs(length(q-vec2(-.03,.05))-.88))*smoothstep(.2,.9,q.x-q.y)*.5;
-    vec3 sph=inner+uRim*fres*1.25+vec3(spec)*.9+vec3(arc)*.16+uRim*low*.22;
-    float edge=smoothstep(R+.004,R-.006,r);
+    float shimmer=1.+.35*uLive*sin(th*2.+uT*2.)+.25*uAmp*sin(th*5.-uT*7.);
+    vec3 rimc=mix(uRim,uB,.5+.5*sin(th+uT*.8))*shimmer;
+    vec3 sph=inner+rimc*fres*1.25+vec3(spec)*.9+vec3(arc)*.16+uRim*low*.22;
+    float edge=smoothstep(Rw+.004,Rw-.006,r);
     col=mix(col,sph,edge); al=mix(al,1.,edge);
   }
   col+=uFlash*mid*exp(-r*1.8)*.5;
@@ -1004,10 +1057,10 @@ class Orb {
     const pr = gl.createProgram(); gl.attachShader(pr, v); gl.attachShader(pr, f); gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) return false;
     gl.useProgram(pr); const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(pr, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    this.u = {}; for (const n of ['uRes', 'uT', 'uGlow', 'uRing', 'uAmp', 'uPart', 'uOrbit', 'uSpin', 'uSat', 'uFlash', 'uA', 'uB', 'uRim']) this.u[n] = gl.getUniformLocation(pr, n);
+    this.u = {}; for (const n of ['uLive', 'uRes', 'uT', 'uGlow', 'uRing', 'uAmp', 'uPart', 'uOrbit', 'uSpin', 'uSat', 'uFlash', 'uA', 'uB', 'uRim']) this.u[n] = gl.getUniformLocation(pr, n);
     gl.clearColor(0, 0, 0, 0); return true;
   }
-  target() { const s = this.preview || OrbHub.state(); const d = ORB_STATES[s]; return { s, a: d[0], b: d[1], rim: d[2], glow: d[3], ring: d[4], part: d[5], orbit: d[6], spin: d[7], sat: d[8] }; }
+  target() { const s = this.preview || OrbHub.state(); const d = ORB_STATES[s]; return { s, a: d[0], b: d[1], rim: d[2], glow: d[3], ring: d[4], part: d[5], orbit: d[6], spin: d[7], sat: d[8], live: ORB_LIVE[s] }; }
   wake() {
     const s = this.target().s; if (s !== this.last) { if (s === 'success' || s === 'listening') this.flashV = s === 'success' ? 1 : 0.4; this.last = s; }
     if (this.host.dataset) this.host.dataset.state = s;
@@ -1019,7 +1072,7 @@ class Orb {
     if (!this.host.isConnected) return this.destroy();
     if (!this.visible || document.visibilityState === 'hidden') { this.running = false; return; }
     const idle = this.target().s === 'idle' || this.target().s === 'offline';
-    if (!idle || now - (this.lastDraw || 0) > 32) this.draw(now); // idle: about 30 frames a second
+    if (!idle || now - (this.lastDraw || 0) > 24) this.draw(now); // idle: about 40 frames a second, offline the same
     requestAnimationFrame((t) => this.loop(t));
   }
   draw(now, snap) {
@@ -1032,13 +1085,16 @@ class Orb {
     const tg = this.target(); const k = snap ? 1 : Math.min(1, dt * 3.2);
     if (!this.cur) this.cur = JSON.parse(JSON.stringify(tg));
     const L = (x, y) => x + (y - x) * k; const C = this.cur;
-    for (const key of ['glow', 'ring', 'part', 'orbit', 'spin', 'sat']) C[key] = L(C[key], tg[key]);
+    for (const key of ['glow', 'ring', 'part', 'orbit', 'spin', 'sat', 'live']) C[key] = L(C[key] == null ? tg[key] : C[key], tg[key]);
+    // while speaking or thinking keep the energy moving even if the phone sends no word timing
+    if (!snap && (tg.s === 'speaking' || this.preview === 'speaking')) OrbHub.pulse(0.30 + 0.45 * Math.abs(Math.sin(now / 137) * Math.sin(now / 341)));
+    if (!snap && tg.s === 'thinking') OrbHub.pulse(0.12 + 0.12 * Math.abs(Math.sin(now / 420)));
     for (const key of ['a', 'b', 'rim']) C[key] = C[key].map((x, i) => L(x, tg[key][i]));
     OrbHub.amp *= Math.pow(0.08, dt); this.flashV *= Math.pow(0.15, dt);
     this.t = (this.t || 0) + dt * (snap ? 0 : 1);
     const u = this.u;
     gl.uniform2f(u.uRes, w, h); gl.uniform1f(u.uT, this.t + 3); gl.uniform1f(u.uGlow, C.glow); gl.uniform1f(u.uRing, C.ring); gl.uniform1f(u.uAmp, snap ? 0.2 : OrbHub.amp);
-    gl.uniform1f(u.uPart, C.part); gl.uniform1f(u.uOrbit, C.orbit); gl.uniform1f(u.uSpin, C.spin); gl.uniform1f(u.uSat, C.sat); gl.uniform1f(u.uFlash, this.flashV);
+    gl.uniform1f(u.uPart, C.part); gl.uniform1f(u.uOrbit, C.orbit); gl.uniform1f(u.uSpin, C.spin); gl.uniform1f(u.uSat, C.sat); gl.uniform1f(u.uFlash, this.flashV); gl.uniform1f(u.uLive, C.live);
     gl.uniform3fv(u.uA, C.a); gl.uniform3fv(u.uB, C.b); gl.uniform3fv(u.uRim, C.rim);
     gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     this.frames++; this.host.dataset.frames = this.frames;
@@ -1217,7 +1273,8 @@ async function renderEvolve() {
     ${engineNote}
     <form class="c-type" id="c-type" hidden><input class="input" id="c-type-in" placeholder="Type to Evolve" autocomplete="off"><button class="btn primary" type="submit">Send</button></form>
     <div class="c-controls">
-      <button class="c-btn" id="c-cap" aria-pressed="${CAP()}" aria-label="Captions">${icon('chat', 18)}<span>${CAP() ? 'Captions on' : 'Captions off'}</span></button>
+      <button class="c-btn" id="c-voice" aria-label="Choose a voice">${icon('speaker', 18)}<span>Voice</span></button>
+      <button class="c-btn" id="c-cap" aria-pressed="${CAP()}" aria-label="Captions">${icon('chat', 18)}<span>${CAP() ? 'Captions' : 'No captions'}</span></button>
       <button class="c-btn c-main" id="c-start" ${Companion.on ? 'hidden' : ''} aria-label="Start talking">${icon('mic', 22)}<span>Talk</span></button>
       <button class="c-btn c-main end" id="c-end" ${Companion.on ? '' : 'hidden'} aria-label="End conversation">${icon('close', 22)}<span>End</span></button>
       <button class="c-btn" id="c-kb" aria-label="Type instead">${icon('edit', 18)}<span>Type</span></button>
@@ -1225,6 +1282,7 @@ async function renderEvolve() {
     <div class="c-links"><button class="linkish" id="c-hist">History</button></div>
   </div>`;
   $('#c-orb').onclick = companionTap; $('#c-start').onclick = () => companionStart(); $('#c-end').onclick = () => companionStop();
+  $('#c-voice').onclick = voiceSheet;
   $('#c-cap').onclick = async () => { await setSetting('captions', !CAP()); renderEvolve(); };
   $('#c-kb').onclick = () => { const f = $('#c-type'); f.hidden = !f.hidden; if (!f.hidden) $('#c-type-in').focus(); };
   $('#c-type').onsubmit = async (e) => { e.preventDefault(); const v = $('#c-type-in').value.trim(); if (!v) return; $('#c-type-in').value = ''; if (!Companion.on) await companionStart(v); else { try { Companion.engine.cancel(); } catch {} cListening(false); companionHandle(v); } };

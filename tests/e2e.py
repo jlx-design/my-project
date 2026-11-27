@@ -545,7 +545,7 @@ try:
               deleteModelAllInfoInCache: async () => {} };"""
             page.evaluate(factory)
             if page.locator('#localai #lstd').count(): page.click('#lstd'); page.wait_for_selector('#localai >> text=Installed', timeout=15000)
-            page.fill('#ctok', ''); page.click('#csavegw')   # no cloud
+            page.fill('#ctok', ''); page.click('#csavegw'); page.wait_for_selector('text=Saved')   # no cloud
             page.evaluate("localStorage.setItem('fakeSR', JSON.stringify([{t:'Help me complete the task', f:true}]))")
             page.goto(URL + '#evolve'); page.reload(); page.evaluate(factory); page.evaluate("window.__loadStep = 900")
             page.wait_for_selector('#c-orb [data-orb]')
@@ -583,6 +583,35 @@ try:
             page.click('#c-end'); page.evaluate("localStorage.removeItem('fakeSR')")
         check('Evolve companion falls back to microphone + on-phone speech-to-text when the phone blocks speech recognition', t_companion_fallback)
 
+
+        def t_voice_sheet():
+            page.goto(URL + '#evolve'); page.wait_for_selector('#c-voice')
+            page.evaluate("window.__spoken = []; window.__ttsDelay = 40")
+            page.click('#c-voice'); page.wait_for_selector('.sheet >> text=Choose a voice')
+            page.click('.sheet [data-vf2="female"]'); page.wait_for_selector('.sheet [data-vf2="female"].on')
+            names = page.locator('.sheet .vrow .title').all_inner_texts(); assert any('Karen' in n for n in names) and not any('Daniel' in n for n in names), names
+            page.locator('.sheet .vrow', has_text='Karen').locator('.vpick').click()
+            page.wait_for_selector('.sheet .vrow.on >> text=Karen')
+            assert waitjs(page, "window.__spoken.some(u => u.voice === 'Karen')", 3), 'speaks a sample in the new voice'
+            page.click('.sheet [data-close]')
+            page.goto(URL + '#control'); page.wait_for_selector('#voicecard >> text=Voice: Karen')
+        check('Voice can be chosen straight from the orb screen (female/male, preview, sample in the chosen voice)', t_voice_sheet)
+
+        def t_natural_voice():
+            # a downloaded Enhanced/Premium voice replaces the robotic basic one automatically
+            page.goto(URL + '#evolve'); page.wait_for_selector('#c-voice')
+            page.evaluate("window.__keep = speechSynthesis.getVoices().slice(); const vs = speechSynthesis.getVoices(); vs.splice(0, vs.length, ...vs.filter(v => !/enhanced|premium/i.test(v.name)))")
+            page.click('#c-voice'); page.wait_for_selector('.sheet >> text=These are basic voices')
+            page.click('.sheet [data-close]')
+            page.evaluate("const vs = speechSynthesis.getVoices(); vs.splice(0, vs.length, ...window.__keep)")
+            page.evaluate("""const vs = speechSynthesis.getVoices(); vs.push({ name: 'Karen (Premium)', lang: 'en-AU', voiceURI: 'com.apple.voice.premium.en-AU.Karen', localService: true, default: false }); window.__spoken = [];""")
+            page.click('#c-voice'); page.wait_for_selector('.sheet >> text=Choose a voice')
+            assert page.locator('.sheet >> text=These are basic voices').count() == 0
+            page.locator('.sheet .vrow', has_text='Samantha').locator('.vprev').click()
+            page.click('.sheet [data-close]')
+            page.evaluate("window.__spoken = []"); page.goto(URL + '#control'); page.wait_for_selector('#vhear'); page.click('#vhear')
+            assert waitjs(page, "window.__spoken.some(u => u.voice === 'Karen (Premium)')", 3), 'chosen Karen is upgraded to Karen (Premium)'
+        check('Natural voices: robotic basic voices explained; a downloaded Premium/Enhanced version is used automatically', t_natural_voice)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]

@@ -327,9 +327,9 @@ img.avatar { width: 26px !important; height: auto !important; background: none !
 @media (prefers-reduced-motion: reduce) { .speakbar .eq i { animation: none; height: 10px; } }
 
 /* v0.9 the orb: always on a dark stage, whatever the app theme */
-.orb { width: var(--orb, 180px); height: var(--orb, 180px); position: relative; flex: none; animation: orb-float 7s ease-in-out infinite; }
+.orb { width: var(--orb, 180px); height: var(--orb, 180px); position: relative; flex: none; animation: orb-float 5.5s ease-in-out infinite; }
 .orb canvas { width: 100%; height: 100%; display: block; }
-@keyframes orb-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes orb-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
 .orb-stage { --stage: #05070d; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 22px 12px 18px; margin: 0 0 14px; border-radius: 22px;
   background: radial-gradient(120% 90% at 50% 38%, #0d1730 0%, #070b16 55%, var(--stage) 100%); color: #dfe8f7; overflow: hidden; }
 .orb-stage.tall { padding: 40px 12px 30px; }
@@ -375,7 +375,7 @@ html[data-route="evolve"] .nav a { color: #8d9bb5; } html[data-route="evolve"] .
 .c-me { margin: 0; font-family: var(--serif); font-size: clamp(1.15rem, 4.6vw, 1.45rem); line-height: 1.45; color: #eef3fc; max-height: 9.5em; overflow: auto; }
 .c-type { width: 100%; max-width: 560px; display: flex; gap: 8px; margin: 6px 0; }
 .c-type .input { background: rgba(255, 255, 255, .06); color: #eef3fc; border-color: rgba(160, 185, 235, .2); }
-.c-controls { margin-top: auto; padding-top: 18px; display: flex; align-items: flex-end; justify-content: center; gap: 22px; }
+.c-controls { margin-top: auto; padding-top: 18px; display: flex; align-items: flex-end; justify-content: center; gap: 14px; }
 .c-btn { all: unset; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: var(--t-xs); color: #94a6c4; min-width: 64px; }
 .c-btn svg { width: 48px; height: 48px; padding: 14px; box-sizing: border-box; border-radius: 50%; background: rgba(255, 255, 255, .07); border: 1px solid rgba(160, 185, 235, .14); color: #dbe6f8; }
 .c-btn.c-main svg { width: 64px; height: 64px; padding: 19px; background: #e9f1ff; color: #0b1222; border: 0; }
