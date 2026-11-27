@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.9.0';
+const VERSION = '1.0.0';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -55,6 +55,7 @@ const ICON = {
   chev: '<path d="M6 9l6 6 6-6"/>',
   history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
   redo: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',
   upload: '<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>',
   text: '<path d="M5 6h14M5 12h14M5 18h9"/>',
@@ -298,7 +299,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=0.9.0', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=1.0.0', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -637,7 +638,7 @@ async function sendMessage(text, convId, opts = {}) {
   if (!conv) { conv = await Store.put('conversations', { id: uid(), title: text.slice(0, 60) }); }
   else if (conv.title === 'New conversation') conv.title = text.slice(0, 60);
   activeConv = conv.id;
-  if (location.hash !== '#chat') { try { history.pushState(null, '', '#chat'); } catch { /* sandbox */ } await renderNav('chat'); }
+  if (!opts.headless && location.hash !== '#chat') { try { history.pushState(null, '', '#chat'); } catch { /* sandbox */ } await renderNav('chat'); }
   if (!opts.regen) await Store.put('messages', { id: uid(), conv: conv.id, role: 'user', content: text, at: now() });
   conv.updated_at = now(); await Store.put('conversations', conv);
   await renderChat();
@@ -669,7 +670,7 @@ async function sendMessage(text, convId, opts = {}) {
         await log('agent', 'research.web', text.slice(0, 120)); throw { __done: true };
       } catch (e) { if (e && (e.__done || e.name === 'AbortError')) throw e; if (e && e.code === 'ai_credits_needed') { if (!Providers.local.available()) throw e; Cap.cloudBlocked = true; provider = Providers.local; } /* otherwise fall back to the chat model */ }
     }
-    const call = () => provider.chat({ system: systemPrompt(agentId, ctx), ctx, messages: history, signal: aborter.signal, onDelta: (t) => { partial = t; renderStreaming(t); } });
+    const call = () => provider.chat({ system: systemPrompt(agentId, ctx), ctx, messages: history, signal: aborter.signal, onDelta: (t) => { partial = t; renderStreaming(t); if (Talk.onDelta) Talk.onDelta(t); } });
     let res;
     try { res = await call(); }
     catch (e) {
@@ -842,7 +843,7 @@ function paintSpeakBar() {
 }
 const speakMode = () => S.speakMode || (S.speakReplies ? 'always' : 'voice');
 const Talk = { pendingVoice: false, spoken: false };
-function maybeSpeakReply(text) { const m = speakMode(); const say = m === 'always' || (m === 'voice' && Talk.spoken); Talk.spoken = false; if (say) Speaker.speak(text); }
+function maybeSpeakReply(text) { if (Talk.suppress) { Talk.spoken = false; return; } const m = speakMode(); const say = m === 'always' || (m === 'voice' && Talk.spoken); Talk.spoken = false; if (say) Speaker.speak(text); }
 
 function voiceCardHTML() {
   const filt = S.voiceFilter || 'all';
@@ -1002,7 +1003,7 @@ class Orb {
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; gl.viewport(0, 0, w, h); }
     const dt = Math.min(0.1, ((now - (this.lastDraw || now)) / 1000) || 0.016); this.lastDraw = now;
     // live loudness from the microphone while recording; otherwise speech/word pulses from OrbHub
-    if (Rec.analyser) { const a = Rec.analyser; const buf = this.ab || (this.ab = new Uint8Array(a.fftSize)); a.getByteTimeDomainData(buf); let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; } OrbHub.pulse(Math.min(1, Math.sqrt(sum / buf.length) * 4)); }
+    if (Rec.analyser || OrbHub.analyser) { const a = Rec.analyser || OrbHub.analyser; const buf = this.ab || (this.ab = new Uint8Array(a.fftSize)); a.getByteTimeDomainData(buf); let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; } OrbHub.pulse(Math.min(1, Math.sqrt(sum / buf.length) * 4)); }
     const tg = this.target(); const k = snap ? 1 : Math.min(1, dt * 3.2);
     if (!this.cur) this.cur = JSON.parse(JSON.stringify(tg));
     const L = (x, y) => x + (y - x) * k; const C = this.cur;
@@ -1023,6 +1024,191 @@ let orbMountQueued = false;
 new MutationObserver(() => { if (orbMountQueued) return; orbMountQueued = true; requestAnimationFrame(() => { orbMountQueued = false; if (document.querySelector('[data-orb]:not([data-renderer])')) mountOrbs(); }); }).observe(document.documentElement, { childList: true, subtree: true });
 function mountOrbs() { $$('[data-orb]').forEach((h) => { if (!h._orb) h._orb = new Orb(h); }); OrbHub.refresh(); }
 function orbHTML(size, extra = '') { return `<div class="orb" data-orb style="--orb:${size}px" ${extra}></div>`; }
+
+/* ---------- Evolve companion: talk, it answers aloud, it listens again (like Siri, without a record button) ----------
+   Two ways to hear you, picked automatically:
+   1. the phone's own speech recognition (words appear as you speak);
+   2. if the phone doesn't allow that here: the microphone + voice detection, then speech-to-text on the phone (Whisper)
+      or in the cloud. Either way JLn Evolve knows when you've finished from the pause after you speak. */
+const STOP_WORDS = /^(stop|goodbye|good bye|bye|bye bye|that's all|that is all|thanks,? that's all|thank you,? that's all|cancel|never ?mind|go to sleep|end|exit)[.!]?$/i;
+const Companion = { on: false, busy: false, engine: null, conv: null, turn: null, quiet: 0, heard: '', reply: '', listeningFlag: false };
+const CAP = () => S.captions !== false;
+function cSet(part, text) { if (part === 'heard') Companion.heard = text; else Companion.reply = text; const el = $(part === 'heard' ? '#c-heard' : '#c-reply'); if (el) { el.textContent = text; el.parentElement && el.parentElement.classList.toggle('has', !!(Companion.heard || Companion.reply)); } }
+function cHint(text) { const el = $('#c-hint'); if (el) el.textContent = text; }
+function cListening(on) { if (on === Companion.listeningFlag) return; Companion.listeningFlag = on; OrbHub.listen(on); }
+
+/* engine 1: phone speech recognition, one fresh session per turn (iPhone is happier that way) */
+function phoneEngine() {
+  const SR = SRClass(); let rec = null, done = null;
+  return {
+    name: 'phone',
+    listen() {
+      return new Promise((resolve, reject) => {
+        let finals = '', interim = '', silence = null, started = false, restarts = 0;
+        const quietMs = Number(window.JLN_END_SILENCE_MS) || 1300;
+        const text = () => (finals + ' ' + interim).replace(/\s+/g, ' ').trim();
+        const finish = (t) => { if (done) return; done = true; clearTimeout(silence); clearTimeout(noSpeech); clearTimeout(watchdog); try { rec && rec.abort(); } catch {} resolve(t); };
+        const noSpeech = setTimeout(() => finish(text()), Number(window.JLN_NO_SPEECH_MS) || 9000);
+        const watchdog = setTimeout(() => { if (!started && !done) { done = true; clearTimeout(noSpeech); try { rec && rec.abort(); } catch {} reject(Object.assign(new Error('no start'), { code: 'no-start' })); } }, 3000);
+        done = null;
+        const make = () => {
+          rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = S.voiceLang || 'en-GB';
+          rec.onstart = () => { started = true; };
+          rec.onresult = (e) => { started = true; let now = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) finals += ' ' + r[0].transcript; else now += r[0].transcript; } interim = now; OrbHub.pulse(0.6); cSet('heard', text()); clearTimeout(silence); if (text()) silence = setTimeout(() => finish(text()), quietMs); };
+          rec.onerror = (e) => { const c = e && e.error; if (['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'].includes(c)) { if (!done) { done = true; clearTimeout(noSpeech); clearTimeout(watchdog); reject(Object.assign(new Error(c), { code: c })); } } };
+          rec.onend = () => { if (done) return; if (interim) { finals += ' ' + interim; interim = ''; } if (text()) return finish(text()); if (restarts++ < 6) setTimeout(() => { if (!done) { try { make(); rec.start(); } catch { finish(''); } } }, 120); else finish(''); };
+        };
+        make(); try { rec.start(); } catch (e) { done = true; clearTimeout(noSpeech); clearTimeout(watchdog); reject(Object.assign(new Error('start failed'), { code: 'no-start' })); }
+      });
+    },
+    cancel() { done = true; try { rec && rec.abort(); } catch {} },
+    close() { this.cancel(); },
+  };
+}
+
+/* engine 2: microphone + voice detection, then speech-to-text */
+async function micEngine(ac) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  const src = ac.createMediaStreamSource(stream); const an = ac.createAnalyser(); an.fftSize = 1024; src.connect(an);
+  const proc = ac.createScriptProcessor(4096, 1, 1); const sink = ac.createGain(); sink.gain.value = 0; src.connect(proc); proc.connect(sink); sink.connect(ac.destination);
+  OrbHub.analyser = an;
+  let turn = null; let floor = 0.01; let quietUntil = 0;
+  proc.onaudioprocess = (e) => {
+    const d = e.inputBuffer.getChannelData(0); const dur = e.inputBuffer.duration * 1000; let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i] * d[i]; const rms = Math.sqrt(sum / d.length);
+    if (Speaker.speaking) quietUntil = Date.now() + 450; // never listen to our own voice
+    if (!turn || Date.now() < quietUntil) return;
+    const th = Math.max(0.012, floor * 2.6);
+    if (!turn.inSpeech) {
+      floor = floor * 0.95 + rms * 0.05; turn.pre.push(new Float32Array(d)); if (turn.pre.length > 3) turn.pre.shift();
+      if (rms > th) { if (++turn.hits >= 2) { turn.inSpeech = true; turn.chunks = turn.pre.slice(); turn.ms = 0; cSet('heard', '…'); } } else turn.hits = 0;
+      return;
+    }
+    turn.chunks.push(new Float32Array(d)); turn.ms += dur; turn.silent = rms < th * 0.8 ? (turn.silent || 0) + dur : 0;
+    if (turn.silent > (Number(window.JLN_END_SILENCE_MS) || 950) || turn.ms > (Number(window.JLN_VAD_MAX_MS) || 20000)) { const t = turn; turn = null; t.done(t.chunks); }
+  };
+  return {
+    name: 'mic',
+    listen() {
+      return new Promise((resolve, reject) => {
+        const noSpeech = setTimeout(() => { if (turn && !turn.inSpeech) { turn = null; resolve(''); } }, Number(window.JLN_NO_SPEECH_MS) || 9000);
+        turn = { pre: [], hits: 0, inSpeech: false, chunks: [], cancel: () => { clearTimeout(noSpeech); resolve(''); }, done: async (chunks) => {
+          clearTimeout(noSpeech); cSet('heard', 'Got it…'); OrbHub.listen(false); Companion.listeningFlag = false; VoiceState.set('thinking');
+          try {
+            const f = pcmTo16k(chunks, ac.sampleRate); if (!f) return resolve('');
+            const t = asrReady() ? await asrRun(f) : (await Providers.gateway.transcribe(f32ToWav(f))).replace(/^\[no speech\]$/i, '').trim();
+            resolve(t);
+          } catch (e) { reject(e); }
+        } };
+      });
+    },
+    cancel() { if (turn) { const t = turn; turn = null; t.cancel(); } },
+    close() { this.cancel(); try { proc.disconnect(); sink.disconnect(); src.disconnect(); } catch {} stream.getTracks().forEach((t) => t.stop()); OrbHub.analyser = null; try { ac.close(); } catch {} },
+  };
+}
+
+async function companionStart(firstText) {
+  if (Companion.on) return;
+  // everything that needs a tap happens here: sound output, microphone, audio processing
+  try { const s = synth(); if (s) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; s.speak(u); } } catch {}
+  const AC = window.AudioContext || window.webkitAudioContext; let ac = null; try { ac = AC ? new AC() : null; ac && ac.resume && ac.resume(); } catch { ac = null; }
+  Companion.on = true; Companion.quiet = 0; cSet('heard', ''); cSet('reply', '');
+  if (!Companion.conv) { const c = await Store.put('conversations', { id: uid(), title: 'Talking with Evolve, ' + new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short' }), companion: true }); Companion.conv = c.id; }
+  try {
+    if (canInstant() && S.companionEngine !== 'mic') { Companion.engine = phoneEngine(); if (ac) { try { ac.close(); } catch {} } }
+    else if (ac && (asrReady() || Providers.gateway.available()) && navigator.mediaDevices) Companion.engine = await micEngine(ac);
+    else { Companion.on = false; paintCompanion(); return cHint(!navigator.mediaDevices ? 'This browser can’t use the microphone.' : 'To talk hands-free here, download free Voice-to-text: More → Control Centre → Voice-to-text on this phone.'); }
+  } catch (e) { Companion.on = false; paintCompanion(); return cHint(e && e.name === 'NotAllowedError' ? 'Microphone access is off. On iPhone: Settings → Apps → Safari → Microphone → Allow.' : 'The microphone couldn’t start. Try again.'); }
+  await log('owner', 'companion.started', Companion.engine.name);
+  paintCompanion();
+  if (firstText) await companionHandle(firstText); else companionListen();
+}
+async function companionStop(why) {
+  Companion.on = false; Speaker.stop(); try { Companion.engine && Companion.engine.close(); } catch {} Companion.engine = null; cListening(false);
+  if (VoiceState.state === 'thinking' && !busy) VoiceState.set('idle');
+  paintCompanion(); cHint(why || 'Paused. Tap the orb to talk.');
+}
+async function companionListen() {
+  if (!Companion.on) return;
+  cListening(true); cHint('Listening. Just speak.'); cSet('heard', '');
+  let text = '';
+  try { text = await Companion.engine.listen(); }
+  catch (e) {
+    cListening(false);
+    if (Companion.engine && Companion.engine.name === 'phone' && (e.code === 'service-not-allowed' || e.code === 'no-start' || e.code === 'not-allowed')) {
+      // the phone refused its own speech recognition here: switch to microphone + voice detection
+      try { Companion.engine.close(); } catch {}
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC && (asrReady() || Providers.gateway.available())) { try { const ac = new AC(); Companion.engine = await micEngine(ac); await setSetting('companionEngine', 'mic'); paintCompanion(); return companionListen(); } catch {} }
+      return companionStop('Your iPhone doesn’t allow speech recognition here. Download free Voice-to-text (More → Control Centre) and tap the orb again.');
+    }
+    return companionStop(SR_ERRORS[e.code] || 'I couldn’t hear you. Tap the orb to try again.');
+  }
+  cListening(false);
+  if (!Companion.on) return;
+  text = (text || '').trim();
+  if (!text) { if (++Companion.quiet >= 2) return companionStop('Paused after a quiet moment. Tap the orb to talk.'); return companionListen(); }
+  Companion.quiet = 0; return companionHandle(text);
+}
+async function companionHandle(text) {
+  cSet('heard', text);
+  if (STOP_WORDS.test(text.trim())) { cSet('reply', 'Okay. Tap the orb when you need me.'); await Speaker.speak('Okay.'); return companionStop('Paused. Tap the orb to talk.'); }
+  cHint('Thinking…'); cSet('reply', '');
+  const before = now();
+  Talk.suppress = true; Talk.pendingSpoken = true; Talk.onDelta = (t) => cSet('reply', toSpeech(parseActions(t.replace(/```actions[\s\S]*$/i, '')).clean, 4000));
+  try { await sendMessage(text, Companion.conv, { headless: true }); } finally { Talk.suppress = false; Talk.onDelta = null; }
+  const msgs = (await Store.all('messages')).filter((m) => m.conv === Companion.conv && m.role === 'assistant' && m.at >= before).sort((a, b) => a.at.localeCompare(b.at));
+  const reply = msgs.length ? msgs[msgs.length - 1].content : 'Sorry, I didn’t get an answer. Please try again.';
+  cSet('reply', toSpeech(reply, 4000));
+  if (!Companion.on) { cHint('Tap the orb to talk.'); return; }
+  cHint('Speaking. Tap the orb to interrupt.');
+  await new Promise((r) => setTimeout(r, 60));
+  await Speaker.speak(reply);
+  if (Companion.on && !Speaker.speaking) { await new Promise((r) => setTimeout(r, 300)); companionListen(); }
+}
+function companionTap() {
+  if (!Companion.on) return companionStart();
+  if (Speaker.speaking) { Speaker.stop(); return; } // interrupt: the speak promise ends and listening resumes
+  if (Companion.listeningFlag) { try { Companion.engine.cancel(); } catch {} return companionStop(); }
+}
+function paintCompanion() {
+  const b = $('#c-end'); if (b) b.hidden = !Companion.on;
+  const s = $('#c-start'); if (s) s.hidden = Companion.on;
+  const orb = $('#c-orb'); if (orb) orb.setAttribute('aria-label', Companion.on ? (Speaker.speaking ? 'Interrupt' : 'Pause') : 'Start talking');
+}
+async function renderEvolve() {
+  if (!onRoute('evolve')) return;
+  const engineNote = canInstant() && S.companionEngine !== 'mic' ? '' : asrReady() ? '' : Providers.gateway.available() ? '' : '<p class="c-note">For hands-free talking without credits, download free <a href="#control">Voice-to-text</a>.</p>';
+  view().innerHTML = `<div class="companion">
+    <div class="c-top"><div class="brand c-brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>${statusChip()}</div>
+    <button class="c-orb" id="c-orb" aria-label="Start talking">${orbHTML(270)}</button>
+    <div class="orb-label c-label" data-orb-status>Ready</div>
+    <p class="c-hint" id="c-hint">${Companion.on ? 'Listening. Just speak.' : `${greeting()}, ${esc(S.name)}. Tap the orb and talk to me.`}</p>
+    <div class="c-captions ${CAP() ? '' : 'off'} ${Companion.heard || Companion.reply ? 'has' : ''}" aria-live="polite"><p class="c-you" id="c-heard">${esc(Companion.heard)}</p><p class="c-me" id="c-reply">${esc(Companion.reply)}</p></div>
+    ${engineNote}
+    <form class="c-type" id="c-type" hidden><input class="input" id="c-type-in" placeholder="Type to Evolve" autocomplete="off"><button class="btn primary" type="submit">Send</button></form>
+    <div class="c-controls">
+      <button class="c-btn" id="c-cap" aria-pressed="${CAP()}" aria-label="Captions">${icon('chat', 18)}<span>${CAP() ? 'Captions on' : 'Captions off'}</span></button>
+      <button class="c-btn c-main" id="c-start" ${Companion.on ? 'hidden' : ''} aria-label="Start talking">${icon('mic', 22)}<span>Talk</span></button>
+      <button class="c-btn c-main end" id="c-end" ${Companion.on ? '' : 'hidden'} aria-label="End conversation">${icon('close', 22)}<span>End</span></button>
+      <button class="c-btn" id="c-kb" aria-label="Type instead">${icon('edit', 18)}<span>Type</span></button>
+    </div>
+    <div class="c-links"><button class="linkish" id="c-hist">History</button></div>
+  </div>`;
+  $('#c-orb').onclick = companionTap; $('#c-start').onclick = () => companionStart(); $('#c-end').onclick = () => companionStop();
+  $('#c-cap').onclick = async () => { await setSetting('captions', !CAP()); renderEvolve(); };
+  $('#c-kb').onclick = () => { const f = $('#c-type'); f.hidden = !f.hidden; if (!f.hidden) $('#c-type-in').focus(); };
+  $('#c-type').onsubmit = async (e) => { e.preventDefault(); const v = $('#c-type-in').value.trim(); if (!v) return; $('#c-type-in').value = ''; if (!Companion.on) await companionStart(v); else { try { Companion.engine.cancel(); } catch {} cListening(false); companionHandle(v); } };
+  $('#c-hist').onclick = companionHistory;
+  paintCompanion(); OrbHub.refresh();
+}
+async function companionHistory() {
+  const convs = (await Store.all('conversations')).sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 12);
+  const msgs = await Store.all('messages');
+  sheet(`<h2>History</h2><p class="muted" style="margin-top:-6px">Everything you and Evolve said, newest first. Long answers, letters and tables are easier to read here.</p>
+    <div class="list">${convs.map((c) => { const n = msgs.filter((m) => m.conv === c.id).length; return `<button class="item" data-cv="${c.id}" style="width:100%;border:0;background:none;text-align:left;cursor:pointer"><div class="grow"><div class="title">${esc(c.title || 'Conversation')}</div><div class="meta">${n} message${n === 1 ? '' : 's'}${c.updated_at ? ', ' + fmtDate(c.updated_at) : ''}</div></div>${icon('chev', 14)}</button>`; }).join('') || '<div class="empty">Nothing yet. Tap the orb and talk.</div>'}</div>`, (el, close) => {
+    $$('[data-cv]', el).forEach((b) => b.onclick = () => { activeConv = b.dataset.cv; close(); location.hash = 'chat'; });
+  });
+}
 
 async function renderOrbPage() {
   if (!onRoute('orb')) return;
@@ -1075,7 +1261,7 @@ async function editTask(id, after) {
 
 /* ---------- views ---------- */
 const view = () => $('#view');
-const onRoute = (name) => { const cur = (location.hash || '#home').slice(1); return (ROUTES[cur] ? cur : 'home') === name; };
+const onRoute = (name) => { const cur = (location.hash || '#evolve').slice(1); return (ROUTES[cur] ? cur : 'evolve') === name; };
 function greeting() { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; }
 function composerHTML(id, placeholder) {
   const showModel = !!S.gatewayToken || hostedWithApi();
@@ -1157,8 +1343,7 @@ async function renderHome() {
     <div class="topbar"><div class="brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>${statusChip()}</div>
     ${connectCardHTML()}
     <div class="hero"><h1>${greeting()}, ${esc(S.name)}.</h1><p class="sub">${esc(summary)}.</p>
-    <a class="orb-card" href="#voice" aria-label="Talk to JLn Evolve">${orbHTML(84)}<span class="orb-card-text"><span class="orb-card-t">Talk to Evolve</span><span class="orb-label" data-orb-status>Ready</span></span>${icon('chev', 16)}</a>
-    ${composerHTML('home-c', 'Ask, plan, or say “remind me to…”')}
+    <a class="orb-card" href="#evolve" aria-label="Talk to JLn Evolve">${orbHTML(84)}<span class="orb-card-text"><span class="orb-card-t">Talk to Evolve</span><span class="orb-label" data-orb-status>Ready</span></span>${icon('chev', 16)}</a>
     <div class="qa" role="group" aria-label="Quick actions">
       <button type="button" class="t-voice" id="qa-rec"><span class="glyph">${icon('mic')}</span><span><span class="qa-t">Record</span><span class="qa-d">Live transcript</span></span></button>
       <button type="button" class="t-task" id="qa-task"><span class="glyph">${icon('check')}</span><span><span class="qa-t">New task</span><span class="qa-d">Or “remind me to…”</span></span></button>
@@ -1176,12 +1361,11 @@ async function renderHome() {
       <div class="list" id="prio">${priorities.length ? priorities.map(taskRow).join('') : `<div class="empty">Nothing urgent. ${open.length ? 'Your other tasks are in Tasks.' : 'Try “remind me to send the invoice tomorrow at 10”.'}</div>`}</div></div>
     ${convs.filter((c) => c.title !== 'New conversation').length ? `<div class="section"><div class="section-head"><h2>Recent conversations</h2><a href="#chat">Open chat</a></div><div class="list">${convs.filter((c) => c.title !== 'New conversation').slice(0, 3).map((c) => `<a class="item" href="#chat" data-conv="${c.id}"><span class="glyph g-chat">${icon('chat')}</span><div class="grow"><div class="title">${esc(c.title)}</div><div class="meta">${fmtDate(c.updated_at)}</div></div></a>`).join('')}</div></div>` : ''}
     ${notes.length ? `<div class="section"><div class="section-head"><h2>Recent in your Vault</h2><a href="#vault">Open Vault</a></div><div class="list">${notes.slice(0, 3).map((n) => `<a class="item" href="#vault"><span class="glyph g-vault">${icon('vault')}</span><div class="grow"><div class="title">${esc(n.title)}</div><div class="meta">${n.kind === 'file' ? 'File, ' : ''}${fmtDate(n.updated_at)}</div></div></a>`).join('')}</div></div>` : ''}`;
-  bindComposer('home-c', (v) => sendMessage(v));
   bindConnectCard(renderHome);
   $('#qa-rec').onclick = () => { location.hash = 'voice'; if (navigator.mediaDevices && window.MediaRecorder && !inArtifact) startRecording(); };
   $('#qa-task').onclick = () => editTask(null, renderHome);
-  $('#qa-write').onclick = () => { const ta = $('#home-c-in'); ta.value = 'Write a formal letter to '; ta.focus(); ta.dispatchEvent(new Event('input')); };
-  $('#qa-brief').onclick = () => sendMessage('brief me');
+  $('#qa-write').onclick = () => { companionStart('I want to write a formal letter. Ask me who it is to and what it is about.'); location.hash = 'evolve'; };
+  $('#qa-brief').onclick = () => { companionStart('Brief me on my day.'); location.hash = 'evolve'; };
   $$('[data-conv]').forEach((a) => a.onclick = () => { activeConv = a.dataset.conv; });
   bindTaskRows(view(), renderHome);
 }
@@ -1194,7 +1378,7 @@ async function renderChat() {
   const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant');
   if (!onRoute('chat')) return;
   view().innerHTML = `
-    <div class="topbar"><h2>${esc(conv && msgs.length ? conv.title : 'Chat')}</h2><div class="row" style="flex-wrap:nowrap">${statusChip()}<button class="btn small icon ghost" id="hist" aria-label="Conversation history">${icon('history', 18)}</button><button class="btn small icon" id="newc" aria-label="New chat">${icon('edit', 17)}</button></div></div>
+    <div class="topbar"><h2>${esc(conv && msgs.length ? conv.title : 'Conversation')}</h2><div class="row" style="flex-wrap:nowrap">${statusChip()}<button class="btn small icon ghost" id="hist" aria-label="Conversation history">${icon('history', 18)}</button><button class="btn small icon" id="newc" aria-label="New chat">${icon('edit', 17)}</button></div></div>
     ${!p ? (Cap.online && hostedWithApi() && !S.gatewayToken ? connectCardHTML() : `<div class="notice" style="margin-bottom:14px">${Cap.online ? 'AI isn’t connected yet.' : 'You’re offline. I can still set reminders, manage tasks, plan your day, search your notes and prepare letter templates. Anything else is answered automatically when you’re back online.'}</div>`) : ''}
     <div class="thread" id="thread">${msgs.length ? msgs.map((m) => msgHTML(m, m === lastAssistant)).join('') : `<div class="welcome" style="padding:28px 4px 8px"><h1 style="font-size:var(--t-xxl)">What can I take off your plate?</h1><p class="sub">I can plan, draft, research from your notes, and keep track of what you decide.</p>${suggestHTML()}</div>`}</div>
     <div class="chat-dock">${composerHTML('chat-c', 'Message JLn Evolve')}</div>`;
@@ -1645,7 +1829,7 @@ function renderConnections() {
   $$('[data-conn]').forEach((b) => b.onclick = () => { const c = CONNECTIONS[+b.dataset.conn]; sheet(`<h2>${c[0]}</h2><p><span class="tag ${c[5]}">${c[4]}</span></p><p style="line-height:1.6">${esc(c[6])}</p><div class="row"><button class="btn" data-close>Close</button></div>`); });
 }
 function renderMore() {
-  const tiles = [['vault', 'Knowledge Vault', 'Notes, files and search', 'g-vault', 'vault'], ['memory', 'Memory', 'What I remember about you', 'g-memory', 'memory'], ['approvals', 'Approvals', 'Drafts waiting for sign-off', 'g-approve', 'approve'], ['connections', 'Connections', 'Gmail, Calendar, Canva, meetings', 'g-chat', 'globe'], ['activity', 'Activity log', 'Everything that happened', 'g-settings', 'log'], ['control', 'Control Centre', 'Themes, AI model, privacy', 'g-settings', 'gear'], ['orb', 'The orb', 'See every state of the orb', 'g-voice', 'spark'], ['status', 'What works', 'Honest feature status', 'g-brief', 'check']];
+  const tiles = [['chat', 'Conversations', 'Read past answers in full', 'g-chat', 'chat'], ['vault', 'Knowledge Vault', 'Notes, files and search', 'g-vault', 'vault'], ['memory', 'Memory', 'What I remember about you', 'g-memory', 'memory'], ['approvals', 'Approvals', 'Drafts waiting for sign-off', 'g-approve', 'approve'], ['connections', 'Connections', 'Gmail, Calendar, Canva, meetings', 'g-chat', 'globe'], ['activity', 'Activity log', 'Everything that happened', 'g-settings', 'log'], ['control', 'Control Centre', 'Themes, AI model, privacy', 'g-settings', 'gear'], ['orb', 'The orb', 'See every state of the orb', 'g-voice', 'spark'], ['status', 'What works', 'Honest feature status', 'g-brief', 'check']];
   if (!onRoute('more')) return;
   view().innerHTML = `<div class="topbar"><h2>More</h2>${statusChip()}</div><div class="list">${tiles.map(([h, t, d, g, ic]) => `<a class="item" href="#${h}"><span class="glyph ${g}">${icon(ic)}</span><div class="grow"><div class="title">${t}</div><div class="meta">${d}</div></div><span class="faint">${icon('chev', 16).replace('M6 9l6 6 6-6', 'M9 6l6 6-6 6')}</span></a>`).join('')}</div>
     <p class="faint" style="margin:18px 4px 0">Studio, Projects and Automations arrive in later phases.</p>`;
@@ -1733,6 +1917,9 @@ function renderStatusPage() {
     ['Reminders, task commands in plain English (no AI needed)', 'Implemented and tested', 'good'],
     ['Gmail: save approved drafts to your Drafts folder (never sends)', 'Implemented; needs your Google Client ID', 'accent'],
     ['Voice-to-text on the phone (Whisper): free, offline, live text', 'Implemented; iPhone test pending', 'accent'],
+    ['Evolve companion: talk hands-free, answers aloud, listens again (replaces Chat)', 'Implemented; iPhone test pending', 'accent'],
+    ['Orb with 8 live states', 'Implemented; iPhone test pending', 'accent'],
+    ['Wake word (“Hey Evolve”) and listening in the background', 'Not possible in a web app on iPhone; needs the native app', ''],
     ['Google Calendar, Canva', 'Planned — needs your sign-in', ''],
     ['Finance and Travel agents, Ewe', 'Planned — after v1', ''],
   ];
@@ -1742,16 +1929,18 @@ function renderStatusPage() {
 }
 
 /* ---------- router + nav ---------- */
-const ROUTES = { connections: renderConnections, home: renderHome, chat: renderChat, voice: renderVoice, tasks: renderTasks, vault: renderVault, memory: renderMemory, approvals: renderApprovals, activity: renderActivity, control: renderControl, more: renderMore, status: renderStatusPage, orb: renderOrbPage };
-const NAV = [['home', 'Home', 'home', ''], ['chat', 'Chat', 'chat', ''], ['voice', 'Voice', 'mic', ''], ['tasks', 'Tasks', 'tasks', ''], ['vault', 'Vault', 'vault', 'desktop-only'], ['memory', 'Memory', 'memory', 'desktop-only'], ['approvals', 'Approvals', 'approve', 'desktop-only'], ['control', 'Control', 'gear', 'desktop-only'], ['more', 'More', 'more', 'mobile-only']];
+const ROUTES = { connections: renderConnections, home: renderHome, chat: renderChat, voice: renderVoice, tasks: renderTasks, vault: renderVault, memory: renderMemory, approvals: renderApprovals, activity: renderActivity, control: renderControl, more: renderMore, status: renderStatusPage, orb: renderOrbPage, evolve: renderEvolve };
+const NAV = [['evolve', 'Evolve', 'spark', ''], ['home', 'Today', 'home', ''], ['voice', 'Recorder', 'mic', ''], ['tasks', 'Tasks', 'tasks', ''], ['vault', 'Vault', 'vault', 'desktop-only'], ['memory', 'Memory', 'memory', 'desktop-only'], ['approvals', 'Approvals', 'approve', 'desktop-only'], ['control', 'Control', 'gear', 'desktop-only'], ['more', 'More', 'more', 'mobile-only']];
 async function renderNav(cur) {
   const pending = (await Store.all('drafts')).filter((d) => ['draft', 'in_review', 'approved'].includes(d.status)).length;
-  const inMore = ['vault', 'memory', 'approvals', 'activity', 'control', 'status', 'connections'].includes(cur);
+  const inMore = ['chat', 'orb', 'vault', 'memory', 'approvals', 'activity', 'control', 'status', 'connections'].includes(cur);
   $('#nav').innerHTML = `<div class="label-desktop brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>` + NAV.map(([h, label, ic, cls]) => `<a href="#${h}" class="${cls} ${cur === h || (h === 'more' && inMore) ? 'on' : ''}" ${cur === h ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${h === 'approvals' && pending ? `<span class="badge">${pending}</span>` : ''}${h === 'more' && pending ? `<span class="badge">${pending}</span>` : ''}</a>`).join('');
 }
 async function route() {
-  const r = (location.hash || '#home').slice(1); const fn = ROUTES[r] || renderHome;
-  await renderNav(ROUTES[r] ? r : 'home'); await fn(); renderStatus();
+  const r = (location.hash || '#evolve').slice(1); const fn = ROUTES[r] || renderEvolve;
+  if (r !== 'evolve' && Companion.on) companionStop();
+  document.documentElement.dataset.route = ROUTES[r] ? r : 'evolve';
+  await renderNav(ROUTES[r] ? r : 'evolve'); await fn(); renderStatus();
   const m = $('#view'); if (m) m.focus({ preventScroll: true });
 }
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); route(); });
