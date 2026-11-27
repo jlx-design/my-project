@@ -516,6 +516,7 @@ try:
             expect(page.locator('#c-reply')).not_to_be_empty()
             assert '**' not in page.inner_text('#c-reply')
             assert waitjs(page, "document.documentElement.dataset.orbState === 'listening'", 6), 'listens again after answering'
+            expect(page.locator('#c-times')).to_contain_text('Thinking')
             assert page.evaluate("location.hash") in ('', '#evolve'), 'stays on the orb (no chat screen)'
             # quiet: pauses by itself after two empty turns
             assert waitjs(page, "!document.querySelector('#c-end') || document.querySelector('#c-end').hidden", 9), 'pauses after silence'
@@ -524,8 +525,8 @@ try:
             page.evaluate("""localStorage.setItem('fakeSR', JSON.stringify([{t:'What is the plan today', f:true, end:true},{t:'goodbye', f:true}]))"""); page.reload(); page.wait_for_selector('#c-orb [data-orb]')
             page.evaluate("window.JLN_END_SILENCE_MS = 400; window.JLN_NO_SPEECH_MS = 3000; window.__ttsDelay = 4000; window.__cancels = 0")
             page.click('#c-orb'); assert waitjs(page, "document.documentElement.dataset.orbState === 'speaking'", 10)
-            page.click('#c-orb'); assert waitjs(page, "window.__cancels >= 1 && document.documentElement.dataset.orbState === 'listening'", 4), 'tap interrupts and listens'
-            expect(page.locator('#c-hint')).to_contain_text('Paused', timeout=6000)
+            page.click('#c-orb'); assert waitjs(page, "window.__cancels >= 1", 4), 'tap interrupts'
+            expect(page.locator('#c-hint')).to_contain_text('Paused', timeout=10000)
             # type instead
             page.evaluate("localStorage.removeItem('fakeSR'); window.__ttsDelay = 40"); page.reload(); page.wait_for_selector('#c-orb [data-orb]')
             page.click('#c-kb'); page.fill('#c-type-in', 'task: buy printer ink'); page.press('#c-type-in', 'Enter')

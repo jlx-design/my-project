@@ -407,3 +407,4 @@ html[data-route="evolve"] .nav a { color: #8d9bb5; } html[data-route="evolve"] .
 @media (max-height: 700px) { .companion .c-controls { bottom: 34px; } .c-stack .c-me { max-height: 4.4em; } }
 .companion { background: radial-gradient(70% 42% at 50% 44%, #0f1c3a 0%, rgba(8, 12, 24, .6) 55%, transparent 100%); }
 .natural .list { margin-top: 4px; } .natural h3 .tag { margin-left: 6px; vertical-align: middle; }
+.c-times { margin: 8px 0 0; font-size: var(--t-xs); color: #5f708c; } .c-times:empty { display: none; }
