@@ -57,7 +57,7 @@ try:
         page = ctx.new_page(); PG[0] = page
         page.set_default_timeout(10000)
         errors = []
-        page.on('pageerror', lambda e: errors.append(str(e)))
+        page.on('pageerror', lambda e: (errors.append(str(e)), print('PAGEERROR', str(e.stack)[:1200], file=sys.stderr)))
         page.on('console', lambda m: errors.append(m.text) if m.type == 'error' else None)
         gw_calls = []
         def gw(route):
@@ -469,6 +469,34 @@ try:
             page.evaluate("localStorage.removeItem('fakeSR'); window.__ttsDelay = 40")
             page.goto(URL + '#control'); page.click('[data-spm="off"]')
         check('Spoken replies: clean speech, chosen voice, Stop, only when I speak, cut in by tapping the mic', t_spoken_replies)
+
+        def t_orb():
+            page.goto(URL + '#orb'); page.wait_for_selector('#orbprev[data-renderer]')
+            r = page.get_attribute('#orbprev', 'data-renderer'); assert r in ('webgl', 'css'), r
+            if r == 'webgl':
+                f1 = int(page.get_attribute('#orbprev', 'data-frames') or 0); time.sleep(0.6); f2 = int(page.get_attribute('#orbprev', 'data-frames') or 0)
+                assert f2 > f1, 'orb animates'
+            for st, label in [('thinking', 'Thinking'), ('error', 'Needs attention'), ('offline', 'Offline')]:
+                page.click(f'[data-os="{st}"]'); expect(page.locator('.orb-stage .orb-label')).to_contain_text(label)
+            page.click('[data-os=""]'); expect(page.locator('.orb-stage .orb-label')).to_have_text('Ready')
+            page.goto(URL + '#home'); page.wait_for_selector('.orb-card [data-orb][data-renderer]')
+            # listening while dictating, thinking while answering, a "Completed" pulse after real actions
+            page.evaluate("""localStorage.setItem('fakeSR', JSON.stringify([{t:'Draft a letter to the bank'},{t:'Draft a letter to the bank', f:true}]))"""); page.reload(); page.wait_for_selector('.orb-card [data-orb-status]')
+            page.click('#home-c [data-dictate]'); expect(page.locator('.orb-card .orb-label')).to_have_text('Listening…', timeout=3000)
+            assert page.evaluate("document.documentElement.dataset.orbState") == 'listening'
+            assert waitjs(page, "document.getElementById('home-c-in').value.includes('bank')", 4), 'dictated text arrives'
+            page.click('#home-c [data-dictate]'); expect(page.locator('.orb-card .orb-label')).not_to_have_text('Listening…', timeout=3000)
+            page.evaluate("localStorage.removeItem('fakeSR')")
+            page.evaluate("window.__states = []; document.addEventListener('jln:voice', () => {}); new MutationObserver(() => window.__states.push(document.documentElement.dataset.orbState)).observe(document.documentElement, { attributes: true, attributeFilter: ['data-orb-state'] })")
+            page.click('#home-c .send-btn')
+            assert waitjs(page, "window.__states.includes('success')", 10), 'completed pulse after actions ran'
+            states = page.evaluate('window.__states'); assert 'thinking' in states, states
+            # offline
+            ctx.set_offline(True); assert waitjs(page, "document.documentElement.dataset.orbState === 'offline'", 3)
+            ctx.set_offline(False); assert waitjs(page, "document.documentElement.dataset.orbState !== 'offline'", 3)
+            page.goto(URL + '#voice'); page.wait_for_selector('.orb-stage [data-orb][data-renderer]')
+            page.screenshot(path=f'{SHOTS}/22-orb-voice.png')
+        check('Orb: drawn live, every state previewable, follows listening, thinking, completed and offline for real', t_orb)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]

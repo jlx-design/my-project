@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -298,7 +298,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=0.8.0', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=0.9.0', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -681,7 +681,11 @@ async function sendMessage(text, convId, opts = {}) {
       } else throw e;
     }
     const { clean, actions } = parseActions(res.text || partial || '');
+    if (actions.length) OrbHub.executing = actions.length > 1 ? `Working on it… ${actions.length} steps` : 'Working on it…';
+    if (actions.length) { OrbHub.refresh(); await new Promise((r) => setTimeout(r, 350)); }
     const results = await applyActions(actions, 'chat');
+    OrbHub.executing = null;
+    if (actions.length) { const failed = results.filter((x) => /not |fail|couldn/i.test(x.kind || '')).length; if (results.length && !failed) OrbHub.show('success', 1600); else if (failed) OrbHub.show('error', 3000, 'Some steps need attention'); else OrbHub.refresh(); }
     await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: clean || '(no answer)', agent: agentName, model: res.model, locality: provider.locality, results, at: now() });
     await log('agent', 'chat.reply', `${agentName} via ${res.model}`);
     maybeSpeakReply(clean);
@@ -691,6 +695,7 @@ async function sendMessage(text, convId, opts = {}) {
       const kept = ($('#streaming .md') || {}).innerText || '';
       await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: (kept.trim() ? kept.trim() + '\n\n' : '') + '_Stopped._', agent: agentName, model: '—', locality: 'cloud', at: now() });
     } else {
+      OrbHub.show('error', 3500, e.code === 'ai_credits_needed' ? 'Needs attention · cloud AI has no credits' : 'Needs attention');
       const why = e.code === 'ai_credits_needed' ? 'Cloud AI has no credits. For free AI, open **Control Centre → On-device AI** and tap **Download** (one time, on Wi-Fi). Then tap **Retry**.' : e.code === 'unauthorised' ? 'This device is not connected to your AI yet. Open your personal setup link once, then tap **Retry**.' : `The AI request failed (${e.code || e.message || 'network error'}).`;
       await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: `${why} Your message is saved.`, agent: 'System', model: '—', locality: 'local', retry: text, at: now() });
     }
@@ -873,6 +878,162 @@ function bindVoiceCard(rerender) {
   const lg = $('#vlang'); if (lg) lg.onchange = async () => { await setSetting('voiceLang', lg.value); toast('Saved'); };
 }
 function speak(text) { return Speaker.speak(text); }
+/* ---------- The JLn Evolve orb: a glass sphere with an infinity core, drawn live with WebGL ----------
+   Its look follows the real state of the agent (OrbHub). It sleeps when hidden, slows down when idle,
+   and draws a still frame per state change when the phone asks for reduced motion. */
+const ORB_STATES = {
+  //            core A      core B      rim         glow  ring  part  orbit spin  sat  label
+  idle:      [[0.36,0.82,1.00],[0.55,0.47,1.00],[0.55,0.86,1.00], 0.60, 0.0, 0.0, 0.0, 0.22, 1.0, 'Ready'],
+  listening: [[0.45,0.90,1.00],[0.80,0.95,1.00],[0.65,0.92,1.00], 0.85, 1.0, 0.0, 0.0, 0.30, 1.0, 'Listening…'],
+  thinking:  [[0.31,0.49,1.00],[0.70,0.40,1.00],[0.60,0.62,1.00], 1.00, 0.0, 1.0, 0.0, 0.75, 1.0, 'Thinking…'],
+  speaking:  [[0.40,0.88,1.00],[0.62,0.45,1.00],[0.55,0.95,0.90], 0.95, 0.0, 0.0, 0.0, 0.40, 1.0, 'Speaking'],
+  executing: [[0.62,0.85,1.00],[0.45,0.62,1.00],[0.70,0.88,1.00], 0.90, 0.0, 0.3, 1.0, 0.60, 1.0, 'Working on it…'],
+  success:   [[0.27,0.94,0.69],[0.29,0.85,1.00],[0.45,1.00,0.80], 1.10, 0.0, 0.0, 0.0, 0.35, 1.0, 'Completed'],
+  error:     [[1.00,0.70,0.28],[1.00,0.42,0.35],[1.00,0.75,0.45], 0.70, 0.0, 0.0, 0.0, 0.15, 1.0, 'Needs attention'],
+  offline:   [[0.78,0.83,0.90],[0.62,0.70,0.82],[0.80,0.86,0.95], 0.45, 0.0, 0.0, 0.0, 0.12, 0.25, 'Offline'],
+};
+const OrbHub = {
+  base: 'idle', flash: null, flashUntil: 0, listening: 0, executing: null, amp: 0, orbs: new Set(), timer: null,
+  state() {
+    if (this.flash && Date.now() < this.flashUntil) return this.flash;
+    if (Speaker.speaking) return 'speaking';
+    if (this.listening > 0) return 'listening';
+    if (this.executing) return 'executing';
+    if (VoiceState.state === 'thinking') return 'thinking';
+    if (!Cap.online) return 'offline';
+    return 'idle';
+  },
+  label() {
+    const s = this.state();
+    if (s === 'executing' && this.executing) return this.executing;
+    if (s === 'offline') return Providers.local.available() ? 'Offline · Local AI active' : 'Offline · Tasks and notes still work';
+    if (s === 'error' && this.errorText) return this.errorText;
+    return ORB_STATES[s][9];
+  },
+  show(state, ms, text) { this.flash = state; this.flashUntil = Date.now() + ms; this.errorText = text || ''; this.refresh(); clearTimeout(this.timer); this.timer = setTimeout(() => { this.flash = null; this.refresh(); }, ms + 20); },
+  listen(on) { this.listening = Math.max(0, this.listening + (on ? 1 : -1)); this.refresh(); },
+  pulse(v) { this.amp = Math.min(1, Math.max(this.amp, v)); },
+  refresh() { const s = this.state(); const l = this.label(); $$('[data-orb-status]:not([data-locked])').forEach((el) => { el.textContent = l; el.dataset.state = s; }); this.orbs.forEach((o) => o.wake()); document.documentElement.dataset.orbState = s; },
+};
+document.addEventListener('jln:voice', () => OrbHub.refresh());
+document.addEventListener('jln:speech-word', () => OrbHub.pulse(0.75));
+window.addEventListener('online', () => OrbHub.refresh()); window.addEventListener('offline', () => OrbHub.refresh());
+
+const ORB_VS = 'attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}';
+const ORB_FS = `precision highp float;
+uniform vec2 uRes;uniform float uT,uGlow,uRing,uAmp,uPart,uOrbit,uSpin,uSat,uFlash;uniform vec3 uA,uB,uRim;
+float seg(vec2 p,vec2 a,vec2 b){vec2 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);return length(pa-ba*h);}
+vec3 lem(float t,float ang){float s=sin(t),c=cos(t),d=1.+s*s;vec3 q=vec3(.60*c/d,.60*s*c/d,.16*sin(2.*t));
+  return vec3(q.x*cos(ang)+q.z*sin(ang),q.y*.92-q.x*sin(ang)*.08,-q.x*sin(ang)+q.z*cos(ang));}
+void main(){
+  vec2 p=(gl_FragCoord.xy*2.-uRes)/min(uRes.x,uRes.y);
+  float R=.70+.012*sin(uT*.9)+uAmp*.035; float r=length(p);
+  vec3 mid=mix(uA,uB,.5); vec3 col=vec3(0.); float al=0.;
+  float halo=exp(-max(r-R,0.)*7.)*.30*uGlow*(1.+uAmp*.6); col+=mid*halo; al+=halo*.9;
+  for(int i=0;i<3;i++){float fi=float(i);float rr=R+.07+fi*.065+uAmp*.10*(1.-fi*.3)+.012*sin(uT*1.6+fi*1.7);
+    float ring=exp(-abs(r-rr)*110.)*uRing*(.55-.15*fi);col+=uA*ring;al+=ring;}
+  for(int i=0;i<3;i++){float an=uT*1.3+float(i)*2.0944;vec2 op=vec2(cos(an)*(R+.12),sin(an)*(R+.12)*.32);
+    float dt=(exp(-length(p-op)*40.)+exp(-length(p-op)*12.)*.25)*uOrbit*(.6+.4*sin(uT*3.+float(i)));col+=uA*dt;al+=dt;}
+  if(r<R+.01){
+    vec2 q=p/R; float z=sqrt(max(1.-dot(q,q),0.)); vec3 n=vec3(q,z);
+    vec3 inner=vec3(.015,.03,.07)+mix(uB,uA,q.y*.5+.5)*.06*(1.-z*.5);
+    vec2 cq=q*(1.+.20*(1.-z));
+    float ang=.42*sin(uT*uSpin*1.3)+.10*sin(uT*.37); float best=9.,bt=0.; vec3 prev=lem(0.,ang);
+    for(int k=1;k<=48;k++){float t=float(k)/48.*6.28318;vec3 cur=lem(t,ang);float d=seg(cq,prev.xy,cur.xy);if(d<best){best=d;bt=t;}prev=cur;}
+    float depth=.6+.4*sin(bt*2.+ang);
+    float strand=.75+.25*sin(bt*9.-uT*2.2);
+    float band=smoothstep(.065,.0,best); float strands=.55+.45*sin(best*170.-uT*1.5);
+    float core=(exp(-best*30.)*1.05+exp(-best*7.)*.42+band*strands*.38)*strand*depth*(1.+uAmp*.9)*uGlow;
+    vec3 cc=mix(uA,uB,.5+.5*sin(bt+uT*.4));
+    inner+=cc*core+vec3(1.)*exp(-best*110.)*.30*uGlow;
+    inner+=mid*.06*(.5+.5*sin(q.x*7.+uT*.3)*sin(q.y*5.-uT*.2))*(1.-z*.4);
+    if(uPart>.01){vec2 g=cq*13.+vec2(uT*.7,-uT*.45);vec2 id=floor(g);vec2 f=fract(g)-.5;float h=fract(sin(dot(id,vec2(12.9898,78.233)))*43758.5453);
+      float sp=smoothstep(.07,.0,length(f-(vec2(fract(h*7.),fract(h*13.))-.5)*.6))*step(.80,h);inner+=uB*sp*uPart*.9;}
+    vec3 L=normalize(vec3(-.55,.62,.56)); float fres=pow(1.-z,3.);
+    float spec=pow(max(dot(reflect(-L,n),vec3(0.,0.,1.)),0.),80.);
+    float arc=smoothstep(.02,.0,abs(length(q-vec2(.04,-.04))-.86))*smoothstep(.3,.9,-q.x+q.y);
+    float low=smoothstep(.04,.0,abs(length(q-vec2(-.03,.05))-.88))*smoothstep(.2,.9,q.x-q.y)*.5;
+    vec3 sph=inner+uRim*fres*1.25+vec3(spec)*.9+vec3(arc)*.16+uRim*low*.22;
+    float edge=smoothstep(R+.004,R-.006,r);
+    col=mix(col,sph,edge); al=mix(al,1.,edge);
+  }
+  col+=uFlash*mid*exp(-r*1.8)*.5;
+  float lum=dot(col,vec3(.299,.587,.114)); col=mix(vec3(lum),col,uSat);
+  al=clamp(al,0.,1.); gl_FragColor=vec4(min(col,vec3(al+.001)*1.6),al);
+}`;
+class Orb {
+  constructor(host) {
+    this.host = host; this.frames = 0; this.cur = null; this.t0 = performance.now(); this.running = false; this.visible = true; this.flashV = 0; this.last = 's';
+    this.reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const c = document.createElement('canvas'); c.setAttribute('aria-hidden', 'true'); host.appendChild(c); this.canvas = c;
+    let gl = null; try { gl = c.getContext('webgl', { premultipliedAlpha: true, antialias: true, alpha: true }); } catch {}
+    if (!gl || !this.build(gl)) { c.remove(); host.classList.add('orb-css'); host.dataset.renderer = 'css'; this.gl = null; }
+    else { this.gl = gl; host.dataset.renderer = 'webgl'; }
+    if ('IntersectionObserver' in window) { this.io = new IntersectionObserver((es) => { this.visible = es.some((e) => e.isIntersecting); this.wake(); }); this.io.observe(host); }
+    OrbHub.orbs.add(this); this.wake();
+  }
+  build(gl) {
+    const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.warn('orb shader', gl.getShaderInfoLog(s)); return null; } return s; };
+    const v = sh(gl.VERTEX_SHADER, ORB_VS), f = sh(gl.FRAGMENT_SHADER, ORB_FS); if (!v || !f) return false;
+    const pr = gl.createProgram(); gl.attachShader(pr, v); gl.attachShader(pr, f); gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) return false;
+    gl.useProgram(pr); const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(pr, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    this.u = {}; for (const n of ['uRes', 'uT', 'uGlow', 'uRing', 'uAmp', 'uPart', 'uOrbit', 'uSpin', 'uSat', 'uFlash', 'uA', 'uB', 'uRim']) this.u[n] = gl.getUniformLocation(pr, n);
+    gl.clearColor(0, 0, 0, 0); return true;
+  }
+  target() { const s = this.preview || OrbHub.state(); const d = ORB_STATES[s]; return { s, a: d[0], b: d[1], rim: d[2], glow: d[3], ring: d[4], part: d[5], orbit: d[6], spin: d[7], sat: d[8] }; }
+  wake() {
+    const s = this.target().s; if (s !== this.last) { if (s === 'success' || s === 'listening') this.flashV = s === 'success' ? 1 : 0.4; this.last = s; }
+    if (this.host.dataset) this.host.dataset.state = s;
+    if (!this.gl) return;
+    if (this.reduce) { this.cur = null; this.draw(performance.now(), true); return; }
+    if (!this.running && this.visible && document.visibilityState !== 'hidden') { this.running = true; requestAnimationFrame((t) => this.loop(t)); }
+  }
+  loop(now) {
+    if (!this.host.isConnected) return this.destroy();
+    if (!this.visible || document.visibilityState === 'hidden') { this.running = false; return; }
+    const idle = this.target().s === 'idle' || this.target().s === 'offline';
+    if (!idle || now - (this.lastDraw || 0) > 32) this.draw(now); // idle: about 30 frames a second
+    requestAnimationFrame((t) => this.loop(t));
+  }
+  draw(now, snap) {
+    const gl = this.gl; const c = this.canvas; const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr); if (!w || !h) return;
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; gl.viewport(0, 0, w, h); }
+    const dt = Math.min(0.1, ((now - (this.lastDraw || now)) / 1000) || 0.016); this.lastDraw = now;
+    // live loudness from the microphone while recording; otherwise speech/word pulses from OrbHub
+    if (Rec.analyser) { const a = Rec.analyser; const buf = this.ab || (this.ab = new Uint8Array(a.fftSize)); a.getByteTimeDomainData(buf); let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; } OrbHub.pulse(Math.min(1, Math.sqrt(sum / buf.length) * 4)); }
+    const tg = this.target(); const k = snap ? 1 : Math.min(1, dt * 3.2);
+    if (!this.cur) this.cur = JSON.parse(JSON.stringify(tg));
+    const L = (x, y) => x + (y - x) * k; const C = this.cur;
+    for (const key of ['glow', 'ring', 'part', 'orbit', 'spin', 'sat']) C[key] = L(C[key], tg[key]);
+    for (const key of ['a', 'b', 'rim']) C[key] = C[key].map((x, i) => L(x, tg[key][i]));
+    OrbHub.amp *= Math.pow(0.08, dt); this.flashV *= Math.pow(0.15, dt);
+    this.t = (this.t || 0) + dt * (snap ? 0 : 1);
+    const u = this.u;
+    gl.uniform2f(u.uRes, w, h); gl.uniform1f(u.uT, this.t + 3); gl.uniform1f(u.uGlow, C.glow); gl.uniform1f(u.uRing, C.ring); gl.uniform1f(u.uAmp, snap ? 0.2 : OrbHub.amp);
+    gl.uniform1f(u.uPart, C.part); gl.uniform1f(u.uOrbit, C.orbit); gl.uniform1f(u.uSpin, C.spin); gl.uniform1f(u.uSat, C.sat); gl.uniform1f(u.uFlash, this.flashV);
+    gl.uniform3fv(u.uA, C.a); gl.uniform3fv(u.uB, C.b); gl.uniform3fv(u.uRim, C.rim);
+    gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this.frames++; this.host.dataset.frames = this.frames;
+  }
+  destroy() { this.running = false; OrbHub.orbs.delete(this); if (this.io) this.io.disconnect(); try { const x = this.gl && this.gl.getExtension('WEBGL_lose_context'); x && x.loseContext(); } catch {} }
+}
+let orbMountQueued = false;
+new MutationObserver(() => { if (orbMountQueued) return; orbMountQueued = true; requestAnimationFrame(() => { orbMountQueued = false; if (document.querySelector('[data-orb]:not([data-renderer])')) mountOrbs(); }); }).observe(document.documentElement, { childList: true, subtree: true });
+function mountOrbs() { $$('[data-orb]').forEach((h) => { if (!h._orb) h._orb = new Orb(h); }); OrbHub.refresh(); }
+function orbHTML(size, extra = '') { return `<div class="orb" data-orb style="--orb:${size}px" ${extra}></div>`; }
+
+async function renderOrbPage() {
+  if (!onRoute('orb')) return;
+  view().innerHTML = `<div class="topbar"><h2>The orb</h2>${statusChip()}</div>
+    <div class="orb-stage tall">${orbHTML(260, 'id="orbprev"')}<div class="orb-label" data-orb-status>Ready</div></div>
+    <p class="faint" style="margin:14px 2px">The orb shows what JLn Evolve is really doing. Tap a state to preview it; it goes back to live when you leave this page.</p>
+    <div class="segmented" style="flex-wrap:wrap">${Object.entries(ORB_STATES).map(([k, v]) => `<button data-os="${k}">${v[9].replace('…', '')}</button>`).join('')}<button data-os="" class="on">Live</button></div>`;
+  mountOrbs(); const o = $('#orbprev')._orb;
+  $$('[data-os]').forEach((b) => b.onclick = () => { $$('[data-os]').forEach((x) => x.classList.toggle('on', x === b)); o.preview = b.dataset.os || null; if (o.preview === 'speaking' || o.preview === 'listening') { const id = setInterval(() => { if (!o.preview || !o.host.isConnected) return clearInterval(id); OrbHub.pulse(0.35 + Math.random() * 0.5); }, 180); } const lab = $('[data-orb-status]'); if (o.preview) lab.dataset.locked = '1'; else delete lab.dataset.locked; lab.textContent = o.preview ? ORB_STATES[o.preview][9] + ' (preview)' : OrbHub.label(); o.wake(); });
+}
+
 
 /* ---------- outbox (sync placeholder: nothing external is auto-sent) ---------- */
 async function flushOutbox() { /* Phase 6: encrypted Supabase sync. Queued external actions are never auto-executed. */ }
@@ -943,23 +1104,25 @@ function bindDictation(btn, target, onChange) {
   if (!btn) return;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Cap.claude.dictation && !SR) { btn.onclick = () => toast('Dictation isn’t available in this browser. Use your keyboard’s microphone, or the Voice tab to record.'); return; }
-  let rec = null, live = false; const base = () => target.value; const set = (v) => { target.value = v; Talk.pendingVoice = true; onChange && onChange(); };
+  let rec = null, live = false; const stopLive = () => { if (live) OrbHub.listen(false); live = false; btn.classList.remove('live'); };
+  const onLeave = () => { if (live) { if (Cap.claude.dictation) { try { Cap.claude.dictation.stop(); } catch {} } else { try { rec && rec.stop(); } catch {} } stopLive(); } window.removeEventListener('hashchange', onLeave); };
+  window.addEventListener('hashchange', onLeave); const base = () => target.value; const set = (v) => { target.value = v; Talk.pendingVoice = true; onChange && onChange(); };
   btn.onclick = () => {
     if (Speaker.speaking) Speaker.stop(); // cut in: stop talking and listen
-    if (live) { live = false; btn.classList.remove('live'); if (Cap.claude.dictation) Cap.claude.dictation.stop(); else rec && rec.stop(); return; }
-    live = true; btn.classList.add('live'); const start = base() ? base() + ' ' : '';
+    if (live) { stopLive(); if (Cap.claude.dictation) Cap.claude.dictation.stop(); else rec && rec.stop(); return; }
+    live = true; btn.classList.add('live'); OrbHub.listen(true); const start = base() ? base() + ' ' : '';
     if (Cap.claude.dictation) {
       const d = Cap.claude.dictation; let acc = start;
       d.onFinal(({ text }) => { acc += text + ' '; set(acc); });
-      d.onPartial(({ text }) => { set(acc + text); });
-      d.onState(({ state }) => { if (state === 'idle') { live = false; btn.classList.remove('live'); } });
-      d.start().catch(() => { live = false; btn.classList.remove('live'); toast('Microphone permission was not given'); });
+      d.onPartial(({ text }) => { OrbHub.pulse(0.5); set(acc + text); });
+      d.onState(({ state }) => { if (state === 'idle') { stopLive(); } });
+      d.start().catch(() => { stopLive(); toast('Microphone permission was not given'); });
     } else {
       rec = new SR(); rec.lang = S.voiceLang; rec.interimResults = true; rec.continuous = true; let acc = start;
-      rec.onresult = (e) => { let interim = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) acc += r[0].transcript + ' '; else interim += r[0].transcript; } set(acc + interim); };
-      rec.onend = () => { live = false; btn.classList.remove('live'); };
-      rec.onerror = () => { live = false; btn.classList.remove('live'); };
-      try { rec.start(); } catch { live = false; btn.classList.remove('live'); }
+      rec.onresult = (e) => { OrbHub.pulse(0.55); let interim = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) acc += r[0].transcript + ' '; else interim += r[0].transcript; } set(acc + interim); };
+      rec.onend = () => { stopLive(); };
+      rec.onerror = () => { stopLive(); };
+      try { rec.start(); } catch { stopLive(); }
     }
   };
 }
@@ -994,6 +1157,7 @@ async function renderHome() {
     <div class="topbar"><div class="brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>${statusChip()}</div>
     ${connectCardHTML()}
     <div class="hero"><h1>${greeting()}, ${esc(S.name)}.</h1><p class="sub">${esc(summary)}.</p>
+    <a class="orb-card" href="#voice" aria-label="Talk to JLn Evolve">${orbHTML(84)}<span class="orb-card-text"><span class="orb-card-t">Talk to Evolve</span><span class="orb-label" data-orb-status>Ready</span></span>${icon('chev', 16)}</a>
     ${composerHTML('home-c', 'Ask, plan, or say “remind me to…”')}
     <div class="qa" role="group" aria-label="Quick actions">
       <button type="button" class="t-voice" id="qa-rec"><span class="glyph">${icon('mic')}</span><span><span class="qa-t">Record</span><span class="qa-d">Live transcript</span></span></button>
@@ -1184,7 +1348,7 @@ async function renderVoice() {
     <div class="topbar"><h2>Voice</h2>${statusChip()}</div>
     <div class="card voice-stage">
       ${canRecord && instantOK && !recording ? `<div class="segmented" role="tablist" style="margin:0 auto 14px;width:max-content" aria-label="Voice mode"><button class="${mode === 'instant' ? 'on' : ''}" data-vm="instant">Instant words</button><button class="${mode === 'record' ? 'on' : ''}" data-vm="record">Record audio</button></div>` : ''}
-      <canvas class="wave" id="wave" width="700" height="96" aria-hidden="true"></canvas>
+      <div class="orb-stage">${orbHTML(190)}<div class="orb-label" data-orb-status>Ready</div></div>
       <div class="rec-time" id="rtime">${recording ? '' : '00:00'}</div>
       <div class="row" style="justify-content:center;gap:18px">
         <button class="btn icon" id="pausebtn" aria-label="Pause" ${Rec.mr ? '' : 'disabled'} style="border-radius:50%;width:48px;height:48px">${icon(Rec.paused ? 'play' : 'pause', 18)}</button>
@@ -1245,14 +1409,14 @@ async function startRecording() {
   if (ac) { try { const src = ac.createMediaStreamSource(Rec.stream); Rec.analyser = ac.createAnalyser(); Rec.analyser.fftSize = 2048; src.connect(Rec.analyser); Rec.ac = ac; Rec.src = src; } catch { Rec.analyser = null; } }
   if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then((l) => { Rec.lock = l; }).catch(() => {});
   await log('owner', 'voice.recording_started', '');
-  renderVoice(); tick();
+  OrbHub.listen(true); renderVoice(); tick();
   if (Rec.ac && Rec.src) liveStart(Rec.ac, Rec.src);
 }
 async function stopRecording() {
   if (Rec.dictating) return stopDictationNote();
   const mr = Rec.mr; if (!mr) return; const total = Rec.elapsed + (Rec.paused ? 0 : (Date.now() - Rec.started) / 1000);
   if (mr.state !== 'inactive') await new Promise((res) => { mr.onstop = res; try { mr.requestData && mr.state === 'recording' && mr.requestData(); } catch {} mr.stop(); setTimeout(res, 3000); });
-  showLive('Finishing the transcript…', true); const liveText = await liveStop();
+  OrbHub.listen(false); showLive('Finishing the transcript…', true); const liveText = await liveStop();
   Rec.stream.getTracks().forEach((t) => t.stop()); cancelAnimationFrame(Rec.raf); clearInterval(Rec.timer); if (Rec.ac) { try { Rec.ac.close(); } catch {} } if (Rec.lock) { Rec.lock.release().catch(() => {}); Rec.lock = null; }
   const blob = new Blob(Rec.chunks, { type: (mr.mimeType || 'audio/mp4').split(';')[0] });
   Rec.mr = null; Rec.analyser = null; Rec.ac = null; Rec.paused = false;
@@ -1292,14 +1456,15 @@ function phoneDictation() {
 async function startDictationNote(engine) {
   const d = engine || Cap.claude.dictation; Rec.dictating = true; Rec.dEngine = d; Rec.live = ''; Rec.partial = ''; Rec.elapsed = 0; Rec.started = Date.now();
   const show = () => { const lt = $('#live'); if (lt) lt.innerHTML = `${esc(Rec.live)}<span class="partial">${esc(Rec.partial)}</span>`; };
-  d.onFinal(({ text }) => { Rec.live += text + ' '; Rec.partial = ''; show(); }); d.onPartial(({ text }) => { Rec.partial = text; show(); }); d.onState(({ state }) => { if (state === 'idle' && Rec.dictating) stopDictationNote(); });
+  d.onFinal(({ text }) => { Rec.live += text + ' '; Rec.partial = ''; OrbHub.pulse(0.6); show(); }); d.onPartial(({ text }) => { Rec.partial = text; OrbHub.pulse(0.5); show(); }); d.onState(({ state }) => { if (state === 'idle' && Rec.dictating) stopDictationNote(); });
   if (d.onError) d.onError((code) => { const m = SR_ERRORS[code] || `Instant words stopped (${code}).`; toast(m); const lt = $('#live'); if (lt && !Rec.live) lt.innerHTML = `<span class="partial" style="font-size:var(--t-s);font-family:var(--sans)">${esc(m)}</span>`; });
   try { await d.start(); } catch { Rec.dictating = false; toast(d.phone ? 'Instant words couldn’t start on this phone. Use Record audio instead.' : 'Microphone permission was not given'); return renderVoice(); }
+  OrbHub.listen(true);
   if (d.phone) await log('owner', 'voice.instant_started', S.voiceLang || 'en-GB');
   renderVoice(); tick();
 }
 async function stopDictationNote() {
-  if (!Rec.dictating) return; Rec.dictating = false; clearInterval(Rec.timer);
+  if (!Rec.dictating) return; Rec.dictating = false; clearInterval(Rec.timer); OrbHub.listen(false);
   try { await (Rec.dEngine || Cap.claude.dictation).stop(); } catch {}
   const text = (Rec.live + Rec.partial).trim(); const total = (Date.now() - Rec.started) / 1000;
   if (text) { await Store.put('voice', { id: uid(), title: 'Voice note, ' + new Date().toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }), transcript: text, duration: total, lang: S.voiceLang, tx_by: Rec.dEngine && Rec.dEngine.phone ? 'iPhone speech' : undefined, instant: !!(Rec.dEngine && Rec.dEngine.phone) }); await log('owner', 'voice.saved', 'dictated note'); toast('Saved'); }
@@ -1480,7 +1645,7 @@ function renderConnections() {
   $$('[data-conn]').forEach((b) => b.onclick = () => { const c = CONNECTIONS[+b.dataset.conn]; sheet(`<h2>${c[0]}</h2><p><span class="tag ${c[5]}">${c[4]}</span></p><p style="line-height:1.6">${esc(c[6])}</p><div class="row"><button class="btn" data-close>Close</button></div>`); });
 }
 function renderMore() {
-  const tiles = [['vault', 'Knowledge Vault', 'Notes, files and search', 'g-vault', 'vault'], ['memory', 'Memory', 'What I remember about you', 'g-memory', 'memory'], ['approvals', 'Approvals', 'Drafts waiting for sign-off', 'g-approve', 'approve'], ['connections', 'Connections', 'Gmail, Calendar, Canva, meetings', 'g-chat', 'globe'], ['activity', 'Activity log', 'Everything that happened', 'g-settings', 'log'], ['control', 'Control Centre', 'Themes, AI model, privacy', 'g-settings', 'gear'], ['status', 'What works', 'Honest feature status', 'g-brief', 'check']];
+  const tiles = [['vault', 'Knowledge Vault', 'Notes, files and search', 'g-vault', 'vault'], ['memory', 'Memory', 'What I remember about you', 'g-memory', 'memory'], ['approvals', 'Approvals', 'Drafts waiting for sign-off', 'g-approve', 'approve'], ['connections', 'Connections', 'Gmail, Calendar, Canva, meetings', 'g-chat', 'globe'], ['activity', 'Activity log', 'Everything that happened', 'g-settings', 'log'], ['control', 'Control Centre', 'Themes, AI model, privacy', 'g-settings', 'gear'], ['orb', 'The orb', 'See every state of the orb', 'g-voice', 'spark'], ['status', 'What works', 'Honest feature status', 'g-brief', 'check']];
   if (!onRoute('more')) return;
   view().innerHTML = `<div class="topbar"><h2>More</h2>${statusChip()}</div><div class="list">${tiles.map(([h, t, d, g, ic]) => `<a class="item" href="#${h}"><span class="glyph ${g}">${icon(ic)}</span><div class="grow"><div class="title">${t}</div><div class="meta">${d}</div></div><span class="faint">${icon('chev', 16).replace('M6 9l6 6 6-6', 'M9 6l6 6-6 6')}</span></a>`).join('')}</div>
     <p class="faint" style="margin:18px 4px 0">Studio, Projects and Automations arrive in later phases.</p>`;
@@ -1577,7 +1742,7 @@ function renderStatusPage() {
 }
 
 /* ---------- router + nav ---------- */
-const ROUTES = { connections: renderConnections, home: renderHome, chat: renderChat, voice: renderVoice, tasks: renderTasks, vault: renderVault, memory: renderMemory, approvals: renderApprovals, activity: renderActivity, control: renderControl, more: renderMore, status: renderStatusPage };
+const ROUTES = { connections: renderConnections, home: renderHome, chat: renderChat, voice: renderVoice, tasks: renderTasks, vault: renderVault, memory: renderMemory, approvals: renderApprovals, activity: renderActivity, control: renderControl, more: renderMore, status: renderStatusPage, orb: renderOrbPage };
 const NAV = [['home', 'Home', 'home', ''], ['chat', 'Chat', 'chat', ''], ['voice', 'Voice', 'mic', ''], ['tasks', 'Tasks', 'tasks', ''], ['vault', 'Vault', 'vault', 'desktop-only'], ['memory', 'Memory', 'memory', 'desktop-only'], ['approvals', 'Approvals', 'approve', 'desktop-only'], ['control', 'Control', 'gear', 'desktop-only'], ['more', 'More', 'more', 'mobile-only']];
 async function renderNav(cur) {
   const pending = (await Store.all('drafts')).filter((d) => ['draft', 'in_review', 'approved'].includes(d.status)).length;
