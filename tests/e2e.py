@@ -536,6 +536,35 @@ try:
             page.screenshot(path=f'{SHOTS}/23-evolve.png'); page.keyboard.press('Escape')
         check('Evolve companion: no Chat tab, tap once and talk, answers aloud, listens again, interrupt, goodbye, pause on silence, type instead', t_companion)
 
+        def t_companion_local_slow():
+            # Like the owner's phone: no cloud credits, on-device AI installed, slow to load after the app opens
+            page.goto(URL + '#control'); page.wait_for_selector('#localai')
+            factory = """window.JLN_LLM_FACTORY = { prebuiltAppConfig: { model_list: [{ model_id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', vram_required_MB: 879 }] },
+              CreateMLCEngine: async (id, o) => { window.__loads = (window.__loads || 0) + 1; for (let i = 1; i <= 6; i++) { o.initProgressCallback({ progress: 0, text: `Loading model from cache[${i}/6]: 0MB loaded. 0% completed` }); await new Promise(r => setTimeout(r, window.__loadStep || 500)); }
+                return { chat: { completions: { create: async () => (async function* () { for (const w of ['Sure. ', 'Start with the bank form.']) yield { choices: [{ delta: { content: w } }] }; })() } }, interruptGenerate() {}, unload: async () => {} }; },
+              deleteModelAllInfoInCache: async () => {} };"""
+            page.evaluate(factory)
+            if page.locator('#localai #lstd').count(): page.click('#lstd'); page.wait_for_selector('#localai >> text=Installed', timeout=15000)
+            page.fill('#ctok', ''); page.click('#csavegw')   # no cloud
+            page.evaluate("localStorage.setItem('fakeSR', JSON.stringify([{t:'Help me complete the task', f:true}]))")
+            page.goto(URL + '#evolve'); page.reload(); page.evaluate(factory); page.evaluate("window.__loadStep = 900")
+            page.wait_for_selector('#c-orb [data-orb]')
+            # the app starts warming the on-device AI by itself and says so under the orb
+            assert waitjs(page, "/on-device AI ready/.test(document.getElementById('c-hint').textContent)", 6), page.inner_text('#c-hint')
+            assert waitjs(page, "/\\d+%/.test(document.getElementById('c-hint').textContent)", 6), 'real percentage, not a stuck 0%'
+            page.evaluate("window.JLN_END_SILENCE_MS = 400; window.JLN_NO_SPEECH_MS = 3000; window.__spoken = []; window.__ttsDelay = 200")
+            page.click('#c-orb')
+            assert waitjs(page, "window.__spoken.some(u => /One moment/.test(u.text))", 6), 'tells me to wait instead of going silent'
+            assert waitjs(page, "window.__spoken.some(u => /bank form/.test(u.text))", 15), 'answers aloud once ready'
+            assert page.evaluate('window.__loads') == 1, 'the model is loaded once, not again for the question'
+            box = page.locator('#c-orb').bounding_box(); vh = page.viewport_size['height']
+            mid = box['y'] + box['height'] / 2; assert vh * 0.25 < mid < vh * 0.55, f'orb near the middle ({mid} of {vh})'
+            page.screenshot(path=f'{SHOTS}/24-evolve-local.png')
+            page.click('#c-end'); page.evaluate("localStorage.removeItem('fakeSR')")
+            page.goto(URL + '#control'); page.fill('#ctok', 'secret-123'); page.click('#csavegw')
+            page.click('#lremove'); page.wait_for_selector('#localai #lstd')
+        check('On-device AI warms up when the app opens, shows real progress, says "one moment", answers aloud; orb centred', t_companion_local_slow)
+
         def t_companion_fallback():
             # the iPhone refuses its speech recognition in Home Screen apps -> microphone + voice detection + on-phone speech-to-text
             page.goto(URL + '#control'); page.wait_for_selector('#localvoice')
@@ -553,6 +582,7 @@ try:
             assert len(gw_calls) == n0 or 'audio' not in gw_calls[-1], 'audio never went to the cloud'
             page.click('#c-end'); page.evaluate("localStorage.removeItem('fakeSR')")
         check('Evolve companion falls back to microphone + on-phone speech-to-text when the phone blocks speech recognition', t_companion_fallback)
+
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]

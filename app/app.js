@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.0.2';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -24,8 +24,10 @@ function toast(msg) {
 function sheet(html, onMount) {
   const back = document.createElement('div'); back.className = 'sheet-back';
   back.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
-  const close = () => back.remove();
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => { back.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); };
   back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('[data-close]')) close(); });
+  document.addEventListener('keydown', onKey); window.addEventListener('hashchange', close);
   document.body.appendChild(back);
   onMount && onMount(back.firstElementChild, close);
   return close;
@@ -232,15 +234,30 @@ async function chooseLocalModel(size) {
   const id = prefs.find((x) => ids.includes(x)) || prefs[0]; const rec = list.find((m) => m.model_id === id);
   return { id, mb: rec && rec.vram_required_MB ? Math.round(rec.vram_required_MB) : null };
 }
+// Loading the on-device AI into the phone's graphics memory takes a while after every app start,
+// so it starts in the background as soon as the app opens (warmLocal), and everyone waiting shares one progress.
+Local.listeners = new Set(); Local.status = { phase: 'idle', p: 0, started: 0 };
+function localProgress(r) {
+  let p = Number(r && r.progress) || 0; const m = /\[(\d+)\/(\d+)\]/.exec((r && r.text) || ''); if (m) p = Math.max(p, Number(m[1]) / Number(m[2]));
+  Local.status.p = Math.min(1, p); Local.status.text = (r && r.text) || ''; Local.listeners.forEach((f) => { try { f(Local.status); } catch {} });
+}
 async function ensureEngine(onProgress) {
   if (Local.engine && Local.modelId === S.localModel) return Local.engine;
-  if (Local.loading) return Local.loading;
-  const lib = await llmLib();
-  Local.loading = lib.CreateMLCEngine(S.localModel, { initProgressCallback: (r) => onProgress && onProgress(r) })
-    .then((e) => { Local.engine = e; Local.modelId = S.localModel; Local.loading = null; return e; })
-    .catch((e) => { Local.loading = null; throw e; });
+  if (onProgress) Local.listeners.add(onProgress);
+  if (Local.loading) return Local.loading.finally(() => onProgress && Local.listeners.delete(onProgress));
+  Local.status = { phase: 'loading', p: 0, started: Date.now() };
+  Local.loading = (async () => { const lib = await llmLib(); return lib.CreateMLCEngine(S.localModel, { initProgressCallback: localProgress }); })()
+    .then((e) => { Local.engine = e; Local.modelId = S.localModel; Local.loading = null; Local.status = { phase: 'ready', p: 1 }; OrbHub.refresh(); return e; })
+    .catch((e) => { Local.loading = null; Local.status = { phase: 'failed', p: 0, error: String((e && e.message) || e).slice(0, 160) }; OrbHub.refresh(); throw e; })
+    .finally(() => onProgress && Local.listeners.delete(onProgress));
   return Local.loading;
 }
+function warmLocal() {
+  if (!Providers.local.available() || Local.engine || Local.loading || S.localWarm === false) return;
+  if (Providers.gateway.available() && !Cap.cloudBlocked && Cap.online) return; // cloud answers; don't spend memory
+  ensureEngine(null).catch(() => {});
+}
+const localWait = (s) => s.p > 0.02 ? `Getting the on-device AI ready… ${Math.round(s.p * 100)}%` : `Getting the on-device AI ready…${s.started && Date.now() - s.started > 8000 ? ` ${Math.round((Date.now() - s.started) / 1000)}s` : ''}`;
 const localName = (id) => !id ? 'On-device AI' : /0\.5B/i.test(id) ? 'On-device AI (Lite)' : 'On-device AI';
 function systemPromptLocal(ctx) {
   return [`You are JLn Evolve, the private assistant of ${S.name}, founder of JLn in Ghana. Today is ${new Date().toDateString()}. You run fully on the owner's phone with no internet.`,
@@ -251,7 +268,14 @@ function systemPromptLocal(ctx) {
 Providers.local.available = () => !!S.localModel && !!S.localReady;
 Providers.local.label = 'On-device AI';
 Providers.local.chat = async ({ system, messages, onDelta, signal, ctx }) => {
-  const engine = await ensureEngine((r) => onDelta && onDelta(`_Starting on-device AI… ${Math.round((r.progress || 0) * 100)}%_`));
+  if (!Local.engine) onDelta && onDelta(`_${localWait(Local.status)}_`);
+  const tick = setInterval(() => { if (!Local.engine && onDelta) onDelta(`_${localWait(Local.status)}_`); }, 1000);
+  const limit = Number(window.JLN_LOCAL_LIMIT_MS) || 150000;
+  let engine;
+  try {
+    engine = await Promise.race([ensureEngine((st) => onDelta && onDelta(`_${localWait(st)}_`)), new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('slow'), { code: 'local_slow' })), limit))]);
+  } finally { clearInterval(tick); }
+  if (onDelta) onDelta('');
   if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
   const stream = await engine.chat.completions.create({ messages: [{ role: 'system', content: ctx ? systemPromptLocal(ctx) : system.slice(0, 3000) }, ...messages.slice(-6)], stream: true, temperature: 0.6, max_tokens: 700 });
   let text = '';
@@ -299,7 +323,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=1.0.0', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=1.0.2', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -697,7 +721,7 @@ async function sendMessage(text, convId, opts = {}) {
       await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: (kept.trim() ? kept.trim() + '\n\n' : '') + '_Stopped._', agent: agentName, model: '—', locality: 'cloud', at: now() });
     } else {
       OrbHub.show('error', 3500, e.code === 'ai_credits_needed' ? 'Needs attention · cloud AI has no credits' : 'Needs attention');
-      const why = e.code === 'ai_credits_needed' ? 'Cloud AI has no credits. For free AI, open **Control Centre → On-device AI** and tap **Download** (one time, on Wi-Fi). Then tap **Retry**.' : e.code === 'unauthorised' ? 'This device is not connected to your AI yet. Open your personal setup link once, then tap **Retry**.' : `The AI request failed (${e.code || e.message || 'network error'}).`;
+      const why = e.code === 'local_slow' ? 'The on-device AI is taking too long to start on this phone. In **More → Control Centre → On-device AI**, tap **Remove**, then download **Lite**: it starts about twice as fast.' : e.code === 'ai_credits_needed' ? 'Cloud AI has no credits. For free AI, open **Control Centre → On-device AI** and tap **Download** (one time, on Wi-Fi). Then tap **Retry**.' : e.code === 'unauthorised' ? 'This device is not connected to your AI yet. Open your personal setup link once, then tap **Retry**.' : `The AI request failed (${e.code || e.message || 'network error'}).`;
       await Store.put('messages', { id: uid(), conv: conv.id, role: 'assistant', content: `${why} Your message is saved.`, agent: 'System', model: '—', locality: 'local', retry: text, at: now() });
     }
   } finally { busy = false; aborter = null; setComposerBusy(false); Talk.pendingSpoken = false; Talk.spoken = false; if (VoiceState.state === 'thinking') VoiceState.set('idle'); }
@@ -959,8 +983,9 @@ void main(){
     col=mix(col,sph,edge); al=mix(al,1.,edge);
   }
   col+=uFlash*mid*exp(-r*1.8)*.5;
+  float fade=smoothstep(1.0,.82,max(abs(p.x),abs(p.y))); col*=fade; al*=fade;
   float lum=dot(col,vec3(.299,.587,.114)); col=mix(vec3(lum),col,uSat);
-  al=clamp(al,0.,1.); gl_FragColor=vec4(min(col,vec3(al+.001)*1.6),al);
+  al=clamp(al,0.,1.); gl_FragColor=vec4(min(col,vec3(al)),al);
 }`;
 class Orb {
   constructor(host) {
@@ -1129,7 +1154,7 @@ async function companionStop(why) {
 }
 async function companionListen() {
   if (!Companion.on) return;
-  cListening(true); cHint('Listening. Just speak.'); cSet('heard', '');
+  cListening(true); cHint('Just speak. I’ll answer when you pause.'); cSet('heard', '');
   let text = '';
   try { text = await Companion.engine.listen(); }
   catch (e) {
@@ -1152,9 +1177,11 @@ async function companionListen() {
 async function companionHandle(text) {
   cSet('heard', text);
   if (STOP_WORDS.test(text.trim())) { cSet('reply', 'Okay. Tap the orb when you need me.'); await Speaker.speak('Okay.'); return companionStop('Paused. Tap the orb to talk.'); }
-  cHint('Thinking…'); cSet('reply', '');
+  cHint(''); cSet('reply', '');
   const before = now();
-  Talk.suppress = true; Talk.pendingSpoken = true; Talk.onDelta = (t) => cSet('reply', toSpeech(parseActions(t.replace(/```actions[\s\S]*$/i, '')).clean, 4000));
+  const waking = !Local.engine && Providers.local.available() && (!Providers.gateway.available() || Cap.cloudBlocked || !Cap.online || S.localOnly);
+  if (waking) { warmLocal(); Speaker.speak(Local.loading ? 'One moment. I’m still waking up.' : 'One moment.'); }
+  Talk.suppress = true; Talk.pendingSpoken = true; Talk.onDelta = (t) => { if (/^_?Getting the on-device AI ready/.test(t)) { cHint(t.replace(/_/g, '')); return; } if (!t) return; cHint(''); cSet('reply', toSpeech(parseActions(t.replace(/```actions[\s\S]*$/i, '')).clean, 4000)); };
   try { await sendMessage(text, Companion.conv, { headless: true }); } finally { Talk.suppress = false; Talk.onDelta = null; }
   const msgs = (await Store.all('messages')).filter((m) => m.conv === Companion.conv && m.role === 'assistant' && m.at >= before).sort((a, b) => a.at.localeCompare(b.at));
   const reply = msgs.length ? msgs[msgs.length - 1].content : 'Sorry, I didn’t get an answer. Please try again.';
@@ -1178,12 +1205,15 @@ function paintCompanion() {
 async function renderEvolve() {
   if (!onRoute('evolve')) return;
   const engineNote = canInstant() && S.companionEngine !== 'mic' ? '' : asrReady() ? '' : Providers.gateway.available() ? '' : '<p class="c-note">For hands-free talking without credits, download free <a href="#control">Voice-to-text</a>.</p>';
+  warmLocal();
   view().innerHTML = `<div class="companion">
     <div class="c-top"><div class="brand c-brand"><img class="brand-mark" src="icons/icon.svg" alt="">JLn Evolve</div>${statusChip()}</div>
+    <div class="c-center"><div class="c-stack">
     <button class="c-orb" id="c-orb" aria-label="Start talking">${orbHTML(270)}</button>
     <div class="orb-label c-label" data-orb-status>Ready</div>
-    <p class="c-hint" id="c-hint">${Companion.on ? 'Listening. Just speak.' : `${greeting()}, ${esc(S.name)}. Tap the orb and talk to me.`}</p>
+    <p class="c-hint" id="c-hint">${Companion.on ? 'Just speak. I’ll answer when you pause.' : `${greeting()}, ${esc(S.name)}. Tap the orb and talk to me.`}</p>
     <div class="c-captions ${CAP() ? '' : 'off'} ${Companion.heard || Companion.reply ? 'has' : ''}" aria-live="polite"><p class="c-you" id="c-heard">${esc(Companion.heard)}</p><p class="c-me" id="c-reply">${esc(Companion.reply)}</p></div>
+    </div></div>
     ${engineNote}
     <form class="c-type" id="c-type" hidden><input class="input" id="c-type-in" placeholder="Type to Evolve" autocomplete="off"><button class="btn primary" type="submit">Send</button></form>
     <div class="c-controls">
@@ -1200,6 +1230,12 @@ async function renderEvolve() {
   $('#c-type').onsubmit = async (e) => { e.preventDefault(); const v = $('#c-type-in').value.trim(); if (!v) return; $('#c-type-in').value = ''; if (!Companion.on) await companionStart(v); else { try { Companion.engine.cancel(); } catch {} cListening(false); companionHandle(v); } };
   $('#c-hist').onclick = companionHistory;
   paintCompanion(); OrbHub.refresh();
+  // while the on-device AI warms up, show it under the orb (you can already start talking)
+  const warm = setInterval(() => {
+    if (!onRoute('evolve')) return clearInterval(warm);
+    if (Local.status.phase === 'loading' && !Companion.on) cHint(localWait(Local.status) + ' You can start talking now.');
+    else if (Local.status.phase !== 'loading') { if (!Companion.on && /on-device AI ready/.test(($('#c-hint') || {}).textContent || '')) cHint(`${greeting()}, ${S.name}. Tap the orb and talk to me.`); clearInterval(warm); }
+  }, 1000);
 }
 async function companionHistory() {
   const convs = (await Store.all('conversations')).sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 12);
@@ -1868,7 +1904,7 @@ async function renderControl() {
       <p class="faint">Cloud backup and sync across devices: Phase 6 (encrypted, Supabase Free).</p></div>
     <p class="faint">JLn Evolve v${VERSION} · <a href="#status">What works</a> · <a href="#activity">Activity log</a></p>`;
   $('#csavep').onclick = async () => { await setSetting('name', $('#cname').value.trim() || 'Joshua'); await setSetting('writingDna', $('#cdna').value.trim()); await log('owner', 'profile.updated', ''); toast('Profile saved'); };
-  $('#csavegw').onclick = async () => { await setSetting('gatewayUrl', $('#cgw').value.trim()); await setSetting('gatewayToken', $('#ctok').value.trim()); await log('owner', 'ai.gateway_set', $('#cgw').value.trim() ? 'configured' : 'cleared'); renderStatus(); toast('Saved'); };
+  $('#csavegw').onclick = async () => { const gwEl = $('#cgw') || { value: S.gatewayUrl || '' }; await setSetting('gatewayUrl', gwEl.value.trim()); await setSetting('gatewayToken', $('#ctok').value.trim()); await log('owner', 'ai.gateway_set', gwEl.value.trim() ? 'configured' : 'cleared'); renderStatus(); toast('Saved'); };
   $('#ctest').onclick = async () => { const out = $('#ctestout'); out.textContent = 'Testing…'; try { await setSetting('gatewayUrl', $('#cgw').value.trim()); await setSetting('gatewayToken', $('#ctok').value.trim()); const r = await Providers.gateway.chat({ system: 'Reply with the single word OK.', messages: [{ role: 'user', content: 'ping' }] }); out.textContent = 'Connected · ' + (r.model || 'cloud'); renderStatus(); } catch (e) { out.textContent = 'Failed: ' + (e.code || e.message || 'network'); } };
   bindLocalCard(renderControl); bindAsrCard(renderControl); bindGmailCard(renderControl);
   $('#cloc').onchange = async (e) => { await setSetting('localOnly', e.target.checked); await log('owner', 'ai.local_only', String(e.target.checked)); renderStatus(); };
@@ -1952,7 +1988,7 @@ async function boot() {
   const m = location.hash.match(/^#key-([A-Za-z0-9_-]{24,128})$/);
   if (m) { await setSetting('gatewayToken', m[1]); syncManifest(); try { history.replaceState(null, '', location.pathname + '#home'); } catch { location.hash = 'home'; } await log('owner', 'device.connected', 'setup link'); setTimeout(() => toast('This device is connected to your AI'), 400); }
   if (!(await Store.all('activity')).length) await log('system', 'app.first_run', 'v' + VERSION);
-  keepStorage(); syncManifest(); route(); detectClaude(); setTimeout(() => answerQueued().catch(() => {}), 2000);
+  keepStorage(); syncManifest(); route(); detectClaude(); setTimeout(warmLocal, 1200); setTimeout(() => answerQueued().catch(() => {}), 2000);
   if ('serviceWorker' in navigator && !inArtifact && location.protocol !== 'file:') {
     const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
