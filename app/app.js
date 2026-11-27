@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '0.6.2';
+const VERSION = '0.7.0';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -110,7 +110,7 @@ async function logNow(actor, event, detail = '') {
 }
 
 /* ---------- settings ---------- */
-const DEFAULTS = { localModel: '', localReady: false, connectHidden: false, asrReady: false, asrError: '', googleClientId: '', gmailToken: '', gmailExp: 0, gAuthState: '', gPending: '', name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
+const DEFAULTS = { voiceMode: 'instant', localModel: '', localReady: false, connectHidden: false, asrReady: false, asrError: '', googleClientId: '', gmailToken: '', gmailExp: 0, gAuthState: '', gPending: '', name: 'Joshua', theme: 'daylight', lightTheme: 'daylight', darkTheme: 'graphite', accent: '', size: 'm', model: 'claude-sonnet-5-5', memoryCollection: true, localOnly: false, gatewayUrl: '', gatewayToken: '', proactivity: 'gentle', quietStart: '21:00', quietEnd: '07:00', voiceLang: 'en-GB', speakReplies: false };
 const S = { ...DEFAULTS };
 async function loadSettings() { const rows = await Store.all('settings'); rows.forEach((r) => { S[r.id] = r.value; }); if (S.theme !== 'auto' && !THEMES.some((t) => t[0] === S.theme)) S.theme = 'daylight'; applyTheme(); }
 async function setSetting(key, value) { S[key] = value; await Store.put('settings', { id: key, value }); if (['theme', 'lightTheme', 'darkTheme', 'accent', 'size'].includes(key)) applyTheme(); }
@@ -298,7 +298,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=0.6.2', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=0.7.0', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -1013,37 +1013,58 @@ function pcmToWav16k(chunks, inRate) {
   return new Blob([wav.buffer], { type: 'audio/wav' });
 }
 function liveStart(ac, src) {
-  Live.text = ''; Live.buf = []; Live.queue = []; Live.local = asrReady(); Live.on = Live.local || Providers.gateway.available();
+  Live.text = ''; Live.buf = []; Live.queue = []; Live.busy = false; Live.bufSec = 0; Live.local = asrReady(); Live.on = Live.local || Providers.gateway.available();
   showLive(Live.on ? '' : 'For live text without credits or internet, download voice-to-text in Control Centre. The recording is still saved.', !Live.on);
   if (!Live.on || !ac.createScriptProcessor) return;
   Live.rate = ac.sampleRate; Live.proc = ac.createScriptProcessor(4096, 1, 1); Live.sink = ac.createGain(); Live.sink.gain.value = 0;
-  Live.proc.onaudioprocess = (e) => { if (!Rec.paused) Live.buf.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  Live.proc.onaudioprocess = (e) => { if (!Rec.paused) { Live.buf.push(new Float32Array(e.inputBuffer.getChannelData(0))); Live.bufSec += e.inputBuffer.duration; } };
   src.connect(Live.proc); Live.proc.connect(Live.sink); Live.sink.connect(ac.destination);
-  Live.timer = setInterval(liveFlush, 6000);
+  Live.timer = setInterval(() => liveFlush(false), 2500);
 }
 function liveFlush(final) {
-  if (Live.local) { const f = pcmTo16k(Live.buf, Live.rate); Live.buf = []; if (!f) return Promise.resolve(); const job = asrRun(f).then((t) => { if (t) { Live.text += (Live.text ? ' ' : '') + t; showLive(Live.text); } }).catch(() => {}); Live.queue.push(job); return job; }
-  const wav = pcmToWav16k(Live.buf, Live.rate); Live.buf = []; if (!wav) return Promise.resolve();
+  // One piece at a time: if the engine is still busy, keep listening and send everything together next time,
+  // so the words can never fall further and further behind.
+  if (Live.busy && !final) { showLive(Live.text); return Promise.resolve(); }
+  if (Live.local) {
+    const f = pcmTo16k(Live.buf, Live.rate); Live.buf = []; Live.bufSec = 0; if (!f) return Promise.resolve();
+    Live.busy = true; const t0 = Date.now();
+    const job = asrRun(f).then((t) => { Live.lastMs = Date.now() - t0; if (t) Live.text += (Live.text ? ' ' : '') + t; }).catch(() => {}).finally(() => { Live.busy = false; showLive(Live.text); });
+    Live.queue.push(job); return job;
+  }
+  const wav = pcmToWav16k(Live.buf, Live.rate); Live.buf = []; Live.bufSec = 0; if (!wav) return Promise.resolve();
+  Live.busy = true;
   const job = (async () => { try { const t = (await Providers.gateway.transcribe(wav)).replace(/^\[no speech\]$/i, '').trim(); if (t) { Live.text += (Live.text ? ' ' : '') + t; showLive(Live.text); } } catch (e) { if (e && e.code === 'ai_credits_needed') { Live.on = false; clearInterval(Live.timer); showLive('Live text needs credits. Download free voice-to-text in Control Centre. The recording is still saved.', true); } } })();
+  job.finally(() => { Live.busy = false; });
   Live.queue.push(job); return job;
 }
 async function liveStop() {
   clearInterval(Live.timer);
-  if (Live.on) { await liveFlush(true); await Promise.all(Live.queue); }
+  if (Live.on) { await Promise.all(Live.queue); await liveFlush(true); await Promise.all(Live.queue); }
   try { Live.proc && Live.proc.disconnect(); Live.sink && Live.sink.disconnect(); } catch {}
   Live.proc = null; Live.sink = null; const t = Live.text; Live.on = false; return t;
 }
-function showLive(text, quiet) { const lt = $('#live'); if (lt) lt.innerHTML = quiet ? `<span class="partial" style="font-size:var(--t-s);font-family:var(--sans)">${esc(text)}</span>` : `${esc(text)}<span class="partial">${Live.on && Rec.mr ? ' …' : ''}</span>`; }
+function showLive(text, quiet) {
+  const lt = $('#live'); if (!lt) return;
+  if (quiet) { lt.innerHTML = `<span class="partial" style="font-size:var(--t-s);font-family:var(--sans)">${esc(text)}</span>`; return; }
+  const behind = Live.on && Rec.mr ? Math.round(Live.bufSec + (Live.busy ? 2 : 0)) : 0;
+  lt.innerHTML = `${esc(text)}<span class="partial">${Live.on && Rec.mr ? (behind >= 6 ? ` … (about ${behind}s behind)` : ' …') : ''}</span>`;
+}
 
 async function renderVoice() {
   const notes = (await Store.all('voice')).sort((a, b) => b.created_at.localeCompare(a.created_at));
   const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder) && !inArtifact;
   const canDictate = !!Cap.claude.dictation;
   const recording = !!(Rec.mr || Rec.dictating);
+  const instantOK = canInstant(); const mode = !canRecord ? 'record' : instantOK && (S.voiceMode || 'instant') === 'instant' ? 'instant' : 'record';
+  const hint = recording ? (Rec.dictating ? 'Listening. Your words appear as you speak. Tap the red button to stop and save the text.' : 'Recording. Tap the red button to stop and save.')
+    : !canRecord ? (canDictate ? 'This preview captures your words live as a note.' : 'Recording isn’t available here. Open the installed app on your phone.')
+    : mode === 'instant' ? 'Instant words: text appears as you speak, using your iPhone’s speech recognition. Saves the text only, no audio.'
+    : `Record audio: saves the sound, with text a few seconds behind${asrReady() ? ' (works offline)' : ''}. Best for meetings.${instantOK ? '' : inIOSSafariTab() ? '' : (/iPhone|iPad/.test(navigator.userAgent) ? ' Instant word-by-word text isn’t offered by iPhone in Home Screen apps yet.' : '')}`;
   if (!onRoute('voice')) return;
   view().innerHTML = `
     <div class="topbar"><h2>Voice</h2>${statusChip()}</div>
     <div class="card voice-stage">
+      ${canRecord && instantOK && !recording ? `<div class="segmented" role="tablist" style="margin:0 auto 14px;width:max-content" aria-label="Voice mode"><button class="${mode === 'instant' ? 'on' : ''}" data-vm="instant">Instant words</button><button class="${mode === 'record' ? 'on' : ''}" data-vm="record">Record audio</button></div>` : ''}
       <canvas class="wave" id="wave" width="700" height="96" aria-hidden="true"></canvas>
       <div class="rec-time" id="rtime">${recording ? '' : '00:00'}</div>
       <div class="row" style="justify-content:center;gap:18px">
@@ -1051,14 +1072,15 @@ async function renderVoice() {
         <button class="big-mic ${recording ? 'live' : ''}" id="recbtn" aria-label="${recording ? 'Stop and save' : 'Start recording'}">${icon(recording ? 'stop' : 'mic', 30)}</button>
         <label class="btn icon" style="border-radius:50%;width:48px;height:48px;cursor:pointer" aria-label="Import an audio file" title="Import audio">${icon('upload', 18)}<input type="file" id="vimport" accept="audio/*,.m4a,.mp3,.wav,.ogg,.aac" hidden></label>
       </div>
-      <p class="faint" style="margin:16px 0 0">${canRecord ? (recording ? 'Recording. Tap the red button to stop and save.' : 'Tap to record. Your words appear here as you speak (a few seconds behind) when you’re online.') : canDictate ? 'This preview captures your words live as a note.' : 'Recording isn’t available here. Open the installed app on your phone.'}</p>
+      <p class="faint" style="margin:16px 0 0">${esc(hint)}</p>
       <div class="live-text" id="live" aria-live="polite"></div>
     </div>
     <div class="section"><div class="section-head"><h2>Recordings</h2><span class="faint">${notes.length}</span></div>
       ${notes.length ? `<label class="sr-only" for="vsearch">Search voice notes</label><input class="input" id="vsearch" placeholder="Search your voice notes" style="margin-bottom:10px">` : ''}
       <div class="list" id="vlist">${notes.map(voiceRow).join('') || '<div class="empty">Your recordings will appear here, with their transcripts.</div>'}</div></div>`;
   const btn = $('#recbtn'); const pbtn = $('#pausebtn');
-  btn.onclick = () => (Rec.mr || Rec.dictating ? stopRecording() : (canRecord ? startRecording() : canDictate ? startDictationNote() : toast('Recording isn’t available in this view')));
+  btn.onclick = () => (Rec.mr || Rec.dictating ? stopRecording() : (canRecord ? (mode === 'instant' ? startDictationNote(phoneDictation()) : startRecording()) : canDictate ? startDictationNote() : toast('Recording isn’t available in this view')));
+  $$('[data-vm]').forEach((b) => { b.onclick = async () => { await setSetting('voiceMode', b.dataset.vm); renderVoice(); }; });
   pbtn.onclick = () => { if (!Rec.mr) return; if (Rec.paused) { Rec.mr.resume(); Rec.paused = false; Rec.started = Date.now(); tick(); pbtn.innerHTML = icon('pause', 18); } else { Rec.mr.pause(); Rec.paused = true; Rec.elapsed += (Date.now() - Rec.started) / 1000; clearInterval(Rec.timer); pbtn.innerHTML = icon('play', 18); } };
   $('#vimport').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; const note = { id: uid(), title: f.name.replace(/\.[^.]+$/, ''), audio: f, duration: 0, transcript: '', lang: S.voiceLang, imported: true }; await Store.put('voice', note); await log('owner', 'voice.imported', f.name); renderVoice(); transcribeNote(note.id, true); };
   const vs = $('#vsearch'); if (vs) vs.oninput = (e) => { const q = e.target.value.toLowerCase(); $$('#vlist .item').forEach((r) => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; }); };
@@ -1120,18 +1142,48 @@ async function stopRecording() {
   await Store.put('voice', note); await log('owner', 'voice.saved', `${note.title} (${fmtDur(total)})`);
   toast('Saved'); renderVoice(); if (!note.transcript) transcribeNote(note.id, true);
 }
-async function startDictationNote() {
-  const d = Cap.claude.dictation; Rec.dictating = true; Rec.live = ''; Rec.partial = ''; Rec.elapsed = 0; Rec.started = Date.now();
+const SRClass = () => window.SpeechRecognition || window.webkitSpeechRecognition || null;
+const canInstant = () => !!SRClass() && !inArtifact;
+const SR_ERRORS = {
+  'not-allowed': 'Microphone or speech recognition was not allowed. Allow it when asked, or in Settings → Apps → Safari → Microphone.',
+  'service-not-allowed': 'Your iPhone didn’t allow speech recognition here. Turn on Dictation (Settings → General → Keyboard → Enable Dictation). If it’s already on, use Record audio instead.',
+  'network': 'Instant words needs internet unless your iPhone has offline dictation for English. Use Record audio when you’re offline.',
+  'audio-capture': 'No microphone was found or another app is using it.',
+  'language-not-supported': 'This language isn’t supported for instant words. Change the voice language in Control Centre.',
+};
+// Same shape as the preview dictation (onFinal / onPartial / onState / start / stop).
+function phoneDictation() {
+  const SR = SRClass(); if (!SR) return null;
+  const fin = [], part = [], st = [], errs = []; let rec = null, active = false, interim = '';
+  const emitFinal = (t) => { t = (t || '').trim(); if (t) fin.forEach((f) => f({ text: t })); };
+  const make = () => {
+    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = S.voiceLang || 'en-GB';
+    rec.onresult = (e) => { let now = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) emitFinal(r[0].transcript); else now += r[0].transcript; } interim = now; part.forEach((f) => f({ text: now })); };
+    rec.onerror = (e) => { const code = e && e.error; if (code && code !== 'no-speech' && code !== 'aborted') { if (['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported', 'network'].includes(code)) active = false; errs.forEach((f) => f(code)); } };
+    // iPhone ends recognition by itself after pauses: keep what was heard and quietly start again.
+    rec.onend = () => { if (interim) { emitFinal(interim); interim = ''; part.forEach((f) => f({ text: '' })); } if (active) setTimeout(() => { if (!active) return; try { make(); rec.start(); } catch { active = false; st.forEach((f) => f({ state: 'idle' })); } }, 150); else st.forEach((f) => f({ state: 'idle' })); };
+  };
+  return {
+    phone: true,
+    onFinal: (f) => fin.push(f), onPartial: (f) => part.push(f), onState: (f) => st.push(f), onError: (f) => errs.push(f),
+    start: async () => { active = true; make(); rec.start(); },
+    stop: async () => { active = false; try { rec && rec.stop(); } catch {} },
+  };
+}
+async function startDictationNote(engine) {
+  const d = engine || Cap.claude.dictation; Rec.dictating = true; Rec.dEngine = d; Rec.live = ''; Rec.partial = ''; Rec.elapsed = 0; Rec.started = Date.now();
   const show = () => { const lt = $('#live'); if (lt) lt.innerHTML = `${esc(Rec.live)}<span class="partial">${esc(Rec.partial)}</span>`; };
   d.onFinal(({ text }) => { Rec.live += text + ' '; Rec.partial = ''; show(); }); d.onPartial(({ text }) => { Rec.partial = text; show(); }); d.onState(({ state }) => { if (state === 'idle' && Rec.dictating) stopDictationNote(); });
-  d.start().catch(() => { Rec.dictating = false; toast('Microphone permission was not given'); renderVoice(); });
+  if (d.onError) d.onError((code) => { const m = SR_ERRORS[code] || `Instant words stopped (${code}).`; toast(m); const lt = $('#live'); if (lt && !Rec.live) lt.innerHTML = `<span class="partial" style="font-size:var(--t-s);font-family:var(--sans)">${esc(m)}</span>`; });
+  try { await d.start(); } catch { Rec.dictating = false; toast(d.phone ? 'Instant words couldn’t start on this phone. Use Record audio instead.' : 'Microphone permission was not given'); return renderVoice(); }
+  if (d.phone) await log('owner', 'voice.instant_started', S.voiceLang || 'en-GB');
   renderVoice(); tick();
 }
 async function stopDictationNote() {
   if (!Rec.dictating) return; Rec.dictating = false; clearInterval(Rec.timer);
-  try { await Cap.claude.dictation.stop(); } catch {}
+  try { await (Rec.dEngine || Cap.claude.dictation).stop(); } catch {}
   const text = (Rec.live + Rec.partial).trim(); const total = (Date.now() - Rec.started) / 1000;
-  if (text) { await Store.put('voice', { id: uid(), title: 'Voice note, ' + new Date().toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }), transcript: text, duration: total, lang: S.voiceLang }); await log('owner', 'voice.saved', 'dictated note'); toast('Saved'); }
+  if (text) { await Store.put('voice', { id: uid(), title: 'Voice note, ' + new Date().toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }), transcript: text, duration: total, lang: S.voiceLang, tx_by: Rec.dEngine && Rec.dEngine.phone ? 'iPhone speech' : undefined, instant: !!(Rec.dEngine && Rec.dEngine.phone) }); await log('owner', 'voice.saved', 'dictated note'); toast('Saved'); }
   renderVoice();
 }
 

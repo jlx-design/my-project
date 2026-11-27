@@ -1,6 +1,6 @@
 """End-to-end tests for JLn Evolve v0.1 in headless Chrome (Playwright).
 Run: python3 tests/e2e.py  (serves ./app on localhost:8765)"""
-import json, subprocess, sys, time, os, re
+import json, re, subprocess, sys, time, os, re
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -40,6 +40,14 @@ try:
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--no-sandbox'])
         ctx = b.new_context(viewport={'width': 428, 'height': 926}, device_scale_factor=2, permissions=['microphone'])
+        # Chromium has its own speech recognition; tests choose it explicitly with window.__fakeSR.
+        ctx.add_init_script("""(() => { const Fake = window.__FakeSRFactory = (words) => { let i = 0; return class { constructor() { this.continuous = false; this.interimResults = false; this.lang = ''; window.__srLang = null; }
+            start() { window.__srLang = this.lang; window.__srStarts = (window.__srStarts || 0) + 1; const self = this; const emit = () => { if (self.stopped) return; if (i >= words.length) return;
+              const w = words[i++]; self.onresult && self.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: w.t }], { isFinal: !!w.f })] });
+              if (w.end) { setTimeout(() => self.onend && self.onend(), 30); return; } setTimeout(emit, 120); }; setTimeout(emit, 100); }
+            stop() { this.stopped = true; setTimeout(() => this.onend && this.onend(), 10); } }; };
+          try { Object.defineProperty(window, 'webkitSpeechRecognition', { value: undefined, configurable: true, writable: true }); window.SpeechRecognition = undefined; } catch (e) {}
+          if (localStorage.getItem('fakeSR')) window.webkitSpeechRecognition = Fake(JSON.parse(localStorage.getItem('fakeSR'))); })();""")
         page = ctx.new_page(); PG[0] = page
         page.set_default_timeout(10000)
         errors = []
@@ -375,6 +383,33 @@ try:
             page.click('.sheet [data-close]')
             ctx.unroute('https://accounts.google.com/**'); ctx.unroute('https://gmail.googleapis.com/**')
         check('Gmail drafts: Google sign-in (compose scope only), saved to Drafts, never marked sent', t_gmail_drafts)
+
+        def t_no_backlog():
+            page.goto(URL + '#voice'); page.wait_for_selector('#recbtn')
+            page.evaluate("""window.__asrMax = 0; window.__asrNow = 0; window.__asrCalls = 0; window.JLN_ASR_FACTORY = { load: async () => ({}),
+              run: async (f) => { window.__asrCalls++; window.__asrNow++; window.__asrMax = Math.max(window.__asrMax, window.__asrNow); await new Promise(r => setTimeout(r, 4000)); window.__asrNow--; return 'part' + window.__asrCalls + '.'; } };""")
+            page.click('#recbtn'); time.sleep(11); page.click('#recbtn'); page.wait_for_selector('#vlist audio', timeout=15000)
+            assert page.evaluate('window.__asrMax') == 1, 'never more than one piece in the speech engine at a time'
+            calls = page.evaluate('window.__asrCalls'); assert 2 <= calls <= 4, f'slow engine gets merged pieces, not one per 2.5 s ({calls})'
+        check('Record audio with a slow phone: one piece at a time, no growing backlog', t_no_backlog)
+
+        def t_instant_words():
+            page.goto(URL + '#voice')
+            page.evaluate("""localStorage.setItem('fakeSR', JSON.stringify([{t:'Remind'},{t:'Remind me to call'},{t:'Remind me to call Ama', f:true, end:true},{t:'about the'},{t:'about the venue', f:true}]))""")
+            page.reload(); page.wait_for_selector('[data-vm="instant"]')
+            expect(page.locator('[data-vm="instant"]')).to_have_class(re.compile('on'))
+            page.click('#recbtn')
+            page.wait_for_selector('#live >> text=Remind me to call', timeout=4000)   # words appear while speaking (interim)
+            page.wait_for_selector('#live >> text=about the venue', timeout=6000)     # survives the phone ending recognition by itself
+            assert page.evaluate('window.__srStarts') >= 2, 'restarts after the phone stops listening'
+            assert page.evaluate('window.__srLang') == 'en-GB'
+            page.screenshot(path=f'{SHOTS}/20-instant-words.png')
+            page.click('#recbtn'); page.wait_for_selector('#vlist >> text=Remind me to call Ama about the venue', timeout=5000)
+            page.click('[data-vm="record"]'); expect(page.locator('[data-vm="record"]')).to_have_class(re.compile('on'))
+            page.wait_for_selector('text=Record audio: saves the sound')
+            page.evaluate("localStorage.removeItem('fakeSR')"); page.reload(); page.wait_for_selector('#recbtn')
+            assert page.locator('[data-vm]').count() == 0, 'no switch when the phone has no speech recognition'
+        check('Instant words: text appears while speaking, keeps going after pauses, saves the text; switch to Record audio', t_instant_words)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]
