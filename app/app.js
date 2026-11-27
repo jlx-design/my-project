@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -323,7 +323,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=1.2.0', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=1.2.1', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -848,7 +848,7 @@ const Speaker = {
     if (naturalOn() && !opts.device) {
       this.stop(true); const my = ++this.gen; this.speaking = true; VoiceState.set('speaking'); const voice = naturalName()[0];
       return speakNatural(spoken, my, voice).then(() => { if (my === this.gen) { this.speaking = false; VoiceState.set('idle'); opts.onEnd && opts.onEnd(); } })
-        .catch((e) => { if (my !== this.gen) return; this.speaking = false; setSetting('ttsError', String((e && e.message) || e).slice(0, 300)); toast('The human-like voice had a problem, so the iPhone voice is speaking.'); return this.speak(text, { ...opts, device: true }); });
+        .catch((e) => { if (my !== this.gen) return; this.speaking = false; setSetting('ttsError', String((e && e.message) || e).slice(0, 300)); toast(e && e.code === 'tts_slow' ? 'The human-like voice is too slow on this phone right now, so the iPhone voice is speaking.' : 'The human-like voice had a problem, so the iPhone voice is speaking.'); return this.speak(text, { ...opts, device: true }); });
     }
     if (Cap.claude.tts && !s) { Cap.claude.tts.speak(spoken).catch(() => {}); return Promise.resolve(); }
     if (!s) { toast('Speaking isn’t supported in this browser'); return Promise.resolve(); }
@@ -868,7 +868,7 @@ const Speaker = {
       next();
     });
   },
-  stop(silent) { const s = synth(); this.gen++; if (this.src) { try { this.src.onended = null; this.src.stop(); } catch {} this.src = null; } const was = this.speaking; this.speaking = false; try { s && s.cancel(); } catch {} if (Cap.claude.tts && Cap.claude.tts.stop) { try { Cap.claude.tts.stop(); } catch {} } if (was && !silent) VoiceState.set('idle'); },
+  stop(silent) { const s = synth(); this.gen++; if (this.src) { try { this.src.stop(); } catch {} this.src = null; this.cur = null; } const was = this.speaking; this.speaking = false; try { s && s.cancel(); } catch {} if (Cap.claude.tts && Cap.claude.tts.stop) { try { Cap.claude.tts.stop(); } catch {} } if (was && !silent) VoiceState.set('idle'); },
 };
 // iPhone only lets a page speak after a tap: say nothing once on the first tap so later replies can be heard.
 document.addEventListener('pointerdown', function unlockSpeech() { const s = synth(); if (s) { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; s.speak(u); } catch {} } document.removeEventListener('pointerdown', unlockSpeech); }, { passive: true });
@@ -958,7 +958,7 @@ const Natural = { worker: null, seq: 0, wait: new Map(), prog: null, onprog: nul
 function naturalClient() {
   if (window.JLN_TTS_FACTORY) return window.JLN_TTS_FACTORY;
   if (!Natural.worker) {
-    Natural.worker = new Worker('tts.js?v=1.2.0', { type: 'module' });
+    Natural.worker = new Worker('tts.js?v=1.2.1', { type: 'module' });
     Natural.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Natural.onprog && Natural.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Natural.wait.get(m.id); if (!w) return; Natural.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'tts_failed'), { code: 'tts_failed' })); };
     Natural.worker.onerror = (e) => { for (const w of Natural.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'voice worker error'), { code: 'tts_failed' })); Natural.wait.clear(); Natural.worker = null; };
   }
@@ -967,29 +967,52 @@ function naturalClient() {
 }
 const naturalOn = () => S.voiceEngine === 'natural' && !!S.ttsReady;
 const naturalName = () => (NATURAL_VOICES.find((v) => v[0] === S.naturalVoice) || NATURAL_VOICES[0]);
+function wavFrom(d, rate) {
+  const wav = new DataView(new ArrayBuffer(44 + d.length * 2)); const w = (p, t) => { for (let i = 0; i < t.length; i++) wav.setUint8(p + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); wav.setUint32(4, 36 + d.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 1, true); wav.setUint32(24, rate, true); wav.setUint32(28, rate * 2, true); wav.setUint16(32, 2, true); wav.setUint16(34, 16, true); w(36, 'data'); wav.setUint32(40, d.length * 2, true);
+  for (let i = 0; i < d.length; i++) { const v = Math.max(-1, Math.min(1, d[i])); wav.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+  return new Blob([wav.buffer], { type: 'audio/wav' });
+}
+// One audio element for the whole app. iPhone lets it play after any tap, and (unlike Web Audio) the silent switch doesn't mute it.
+const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+function voiceEl() {
+  if (!Speaker.el) { const a = document.createElement('audio'); a.setAttribute('playsinline', ''); a.preload = 'auto'; a.style.display = 'none'; document.body.appendChild(a); Speaker.el = a; }
+  return Speaker.el;
+}
+function unlockVoiceEl() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
+  const a = voiceEl(); if (Speaker.elUnlocked || Speaker.src) return;
+  try { a.src = SILENT_WAV; const p = a.play(); if (p && p.then) p.then(() => { Speaker.elUnlocked = true; }).catch(() => {}); } catch {}
+}
+document.addEventListener('pointerdown', () => { if (naturalOn() || Natural.prog) unlockVoiceEl(); }, { passive: true });
+Speaker.level = () => { const c = Speaker.cur; if (!c || !Speaker.src) return 0; const i0 = Math.floor(c.el.currentTime * c.rate); let sum = 0, n = 0; for (let i = i0; i < Math.min(c.audio.length, i0 + 1024); i++) { sum += c.audio[i] * c.audio[i]; n++; } return n ? Math.min(1, Math.sqrt(sum / n) * 5) : 0; };
 function audioOut() {
   const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
   if (!Speaker.ac || Speaker.ac.state === 'closed') { Speaker.ac = new AC(); Speaker.an = Speaker.ac.createAnalyser(); Speaker.an.fftSize = 1024; Speaker.an.connect(Speaker.ac.destination); }
   if (Speaker.ac.state === 'suspended') { try { Speaker.ac.resume(); } catch {} }
   return Speaker.ac;
 }
-document.addEventListener('pointerdown', () => { if (naturalOn()) audioOut(); }, { passive: true });
 // shorter pieces start sooner: split long sentences at commas
 function speechChunks(t) { const out = []; for (const s of sentences(t)) { if (s.length <= 160) { out.push(s); continue; } let cur = ''; for (const part of s.split(/(?<=[,;:])\s+/)) { if ((cur + ' ' + part).length > 160 && cur) { out.push(cur.trim()); cur = part; } else cur += ' ' + part; } if (cur.trim()) out.push(cur.trim()); } return out; }
 async function speakNatural(spoken, my, voice) {
-  const ac = audioOut(); if (!ac) throw new Error('no audio');
+  unlockVoiceEl(); const el = voiceEl();
   const parts = speechChunks(spoken); const speed = Number(S.voiceRate) || 1;
   const gen = (i) => naturalClient().run(parts[i], voice, speed);
   let next = parts.length ? gen(0) : null; let played = 0, genMs = 0;
+  const limit = Number(window.JLN_TTS_LIMIT_MS) || 20000;
   for (let i = 0; i < parts.length; i++) {
-    const r = await next; if (my !== Speaker.gen) return;
+    const r = await Promise.race([next, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(`This phone took more than ${Math.round(limit / 1000)} s to prepare one sentence of the human-like voice.`), { code: 'tts_slow' })), limit))]);
+    if (my !== Speaker.gen) return;
     genMs += r.ms || 0; played += r.audio.length / r.rate;
     next = i + 1 < parts.length ? gen(i + 1) : null; // prepare the next piece while this one plays
-    await new Promise((resolve) => {
-      const buf = ac.createBuffer(1, r.audio.length, r.rate); buf.copyToChannel ? buf.copyToChannel(r.audio, 0) : buf.getChannelData(0).set(r.audio);
-      const src = ac.createBufferSource(); src.buffer = buf; src.connect(Speaker.an); Speaker.src = src;
-      src.onended = () => { Speaker.src = null; resolve(); };
-      try { src.start(); } catch { resolve(); }
+    await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(wavFrom(r.audio, r.rate));
+      const done = () => { el.onended = el.onerror = null; URL.revokeObjectURL(url); Speaker.src = null; Speaker.cur = null; resolve(); };
+      Speaker.src = { stop: () => { try { el.pause(); } catch {} done(); } }; Speaker.cur = { el, audio: r.audio, rate: r.rate };
+      el.onended = done; el.onerror = () => { done(); };
+      el.src = url;
+      const p = el.play();
+      if (p && p.catch) p.catch((e) => { el.onended = el.onerror = null; URL.revokeObjectURL(url); Speaker.src = null; Speaker.cur = null; reject(Object.assign(new Error('The phone blocked the sound (' + ((e && e.name) || 'blocked') + '). Tap the orb once, then try again.'), { code: 'tts_blocked' })); });
       document.dispatchEvent(new CustomEvent('jln:speech-word', { detail: { charIndex: 0 } }));
     });
     if (my !== Speaker.gen) return;
@@ -1003,7 +1026,7 @@ async function installNatural(rerender) {
     await naturalClient().load((p, total) => { Natural.prog.p = p; Natural.prog.total = total; paintNatural(); });
     Natural.prog = null; await setSetting('ttsReady', true); await setSetting('ttsError', ''); await setSetting('voiceEngine', 'natural'); keepStorage();
     await log('owner', 'natural_voice.installed', 'kokoro-82m');
-    toast('Human-like voice is ready'); rerender && rerender(); audioOut(); Speaker.speak(SAMPLE());
+    toast('Human-like voice is ready. Tap Preview to hear it.'); rerender && rerender();
   } catch (e) {
     Natural.prog = null; try { Natural.worker && Natural.worker.terminate(); } catch {} Natural.worker = null;
     const why = String((e && e.message) || e || 'unknown').slice(0, 300); await setSetting('ttsError', why); await log('system', 'natural_voice.failed', why);
@@ -1032,6 +1055,8 @@ function naturalSectionHTML() {
     <div id="nprog" style="display:none"><div style="height:8px;border-radius:4px;background:var(--sunken);overflow:hidden"><div id="nbar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div></div><p class="faint" id="ntext" style="margin:6px 0 8px"></p></div>
     ${ready ? `<div class="list">${NATURAL_VOICES.map(([id, nm, g, acc]) => `<div class="item vrow ${on && cur === id ? 'on' : ''}" data-nv="${id}"><button class="npick" style="all:unset;cursor:pointer;flex:1;min-width:0"><div class="title">${on && cur === id ? '✓ ' : ''}${nm}</div><div class="meta">${g === 'female' ? 'Female' : 'Male'}, ${acc}${id === 'af_heart' ? ', most natural' : ''}</div></button><button class="btn small nprev">${icon('play', 14)} Preview</button></div>`).join('')}</div>
       <div class="row" style="margin-top:10px">${on ? '<button class="btn ghost nbtn" id="ndevice">Use iPhone voices instead</button>' : '<button class="btn primary nbtn" id="nuse">Use human-like voice</button>'}<button class="btn ghost danger nbtn" id="nremove">Remove</button></div>
+      <p class="faint" style="margin:8px 0 0">Can’t hear it? Turn the volume up. The first sentence can take a few seconds to prepare.</p>
+      ${S.ttsError ? `<p class="faint" style="margin:6px 0 0">Last problem (send this to Claude): <code>${esc(S.ttsError)}</code></p>` : ''}
       ${slow ? `<p class="faint" style="margin:8px 0 0">On this phone the voice takes a moment to prepare each sentence (${S.ttsRtf}× real time), so there can be short pauses.</p>` : ''}`
     : `<button class="btn primary nbtn" id="nget">Download human-like voice (about 90 MB)</button>
       ${S.ttsError ? `<p class="faint" style="margin:8px 0 0">Last problem (send this to Claude): <code>${esc(S.ttsError)}</code></p>` : ''}`}
@@ -1040,13 +1065,13 @@ function naturalSectionHTML() {
 function bindNatural(root, rerender) {
   paintNatural();
   const b = (sel, fn) => { const x = root.querySelector(sel); if (x) x.onclick = fn; };
-  b('#nget', () => { audioOut(); installNatural(rerender); });
-  b('#nuse', async () => { audioOut(); await setSetting('voiceEngine', 'natural'); rerender(); Speaker.speak(SAMPLE()); });
+  b('#nget', () => { unlockVoiceEl(); installNatural(rerender); });
+  b('#nuse', async () => { unlockVoiceEl(); await setSetting('voiceEngine', 'natural'); rerender(); Speaker.speak(SAMPLE()); });
   b('#ndevice', async () => { await setSetting('voiceEngine', 'device'); rerender(); Speaker.speak(SAMPLE()); });
   b('#nremove', async () => { await removeNatural(); toast('Human-like voice removed'); rerender(); });
   root.querySelectorAll('[data-nv]').forEach((r) => {
-    r.querySelector('.npick').onclick = async () => { audioOut(); await setSetting('naturalVoice', r.dataset.nv); await setSetting('voiceEngine', 'natural'); await log('owner', 'voice.chosen', 'natural ' + r.dataset.nv); rerender(); Speaker.speak(SAMPLE()); };
-    r.querySelector('.nprev').onclick = () => { audioOut(); const k1 = S.naturalVoice, k2 = S.voiceEngine; S.naturalVoice = r.dataset.nv; S.voiceEngine = 'natural'; Speaker.speak(SAMPLE()); S.naturalVoice = k1; S.voiceEngine = k2; };
+    r.querySelector('.npick').onclick = async () => { unlockVoiceEl(); await setSetting('naturalVoice', r.dataset.nv); await setSetting('voiceEngine', 'natural'); await log('owner', 'voice.chosen', 'natural ' + r.dataset.nv); rerender(); Speaker.speak(SAMPLE()); };
+    r.querySelector('.nprev').onclick = () => { unlockVoiceEl(); const k1 = S.naturalVoice, k2 = S.voiceEngine; S.naturalVoice = r.dataset.nv; S.voiceEngine = 'natural'; Speaker.speak(SAMPLE()); S.naturalVoice = k1; S.voiceEngine = k2; };
   });
 }
 
@@ -1190,7 +1215,8 @@ class Orb {
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; gl.viewport(0, 0, w, h); }
     const dt = Math.min(0.1, ((now - (this.lastDraw || now)) / 1000) || 0.016); this.lastDraw = now;
     // live loudness from the microphone while recording; otherwise speech/word pulses from OrbHub
-    const liveAn = Speaker.src ? Speaker.an : (Rec.analyser || OrbHub.analyser);
+    if (Speaker.cur) OrbHub.pulse(Speaker.level());
+    const liveAn = Speaker.cur ? null : (Rec.analyser || OrbHub.analyser);
     if (liveAn) { const a = liveAn; const buf = this.ab || (this.ab = new Uint8Array(a.fftSize)); a.getByteTimeDomainData(buf); let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; } OrbHub.pulse(Math.min(1, Math.sqrt(sum / buf.length) * 4)); }
     const tg = this.target(); const k = snap ? 1 : Math.min(1, dt * 3.2);
     if (!this.cur) this.cur = JSON.parse(JSON.stringify(tg));
@@ -1301,6 +1327,7 @@ async function companionStart(firstText) {
   if (Companion.on) return;
   // everything that needs a tap happens here: sound output, microphone, audio processing
   try { const s = synth(); if (s) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; s.speak(u); } } catch {}
+  if (naturalOn()) unlockVoiceEl();
   const AC = window.AudioContext || window.webkitAudioContext; let ac = null; try { ac = AC ? new AC() : null; ac && ac.resume && ac.resume(); } catch { ac = null; }
   Companion.on = true; Companion.quiet = 0; cSet('heard', ''); cSet('reply', '');
   if (!Companion.conv) { const c = await Store.put('conversations', { id: uid(), title: 'Talking with Evolve, ' + new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short' }), companion: true }); Companion.conv = c.id; }

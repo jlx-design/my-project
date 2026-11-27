@@ -1,7 +1,7 @@
 /* JLn Evolve service worker.
    Online: always fetch the newest app (network first), keep a copy for offline.
    Offline: serve the saved copy. AI requests are never cached. */
-const CACHE = 'jln-evolve-v1.2.0';
+const CACHE = 'jln-evolve-v1.2.1';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './asr.js', './tts.js', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== 'jln-evolve-lib').map((k) => caches.delete(k)))).then(() => self.clients.claim())); });

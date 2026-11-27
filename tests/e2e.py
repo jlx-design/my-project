@@ -571,7 +571,9 @@ try:
             page.goto(URL + '#control'); page.wait_for_selector('#voicecard #nget'); page.evaluate(fac)
             page.click('#nget'); page.wait_for_selector('#ntext >> text=Downloading the voice', timeout=3000)
             page.wait_for_selector('#voicecard [data-nv="af_heart"]', timeout=8000)
+            page.locator('#voicecard [data-nv="af_heart"] .nprev').click()
             assert waitjs(page, "window.__nat.some(c => c.voice === 'af_heart')", 5), 'speaks a sample in the human-like voice'
+            assert waitjs(page, "!!document.querySelector('audio') && document.querySelector('audio').src.startsWith('blob:')", 5), 'plays through an audio element (not muted by the silent switch)'
             page.evaluate("window.__spoken = []; window.__nat = []")
             page.locator('#voicecard [data-nv="bm_george"] .npick').click(); page.wait_for_selector('#voicecard [data-nv="bm_george"].on')
             assert waitjs(page, "window.__nat.some(c => c.voice === 'bm_george')", 5)
@@ -588,6 +590,12 @@ try:
             page.evaluate("window.__natFail = true; window.__spoken = []; window.__natSec = 0.25")
             page.goto(URL + '#control'); page.wait_for_selector('#vhear'); page.click('#vhear')
             assert waitjs(page, "window.__spoken.some(u => u.text.trim().length > 3)", 5), 'falls back to the iPhone voice'
+            # too slow on this phone -> iPhone voice after the time limit, problem shown
+            page.evaluate("window.__natFail = false; window.JLN_TTS_LIMIT_MS = 600; window.__spoken = []; const f = window.JLN_TTS_FACTORY; window.__slowRun = f.run; f.run = () => new Promise(() => {}); 1")
+            page.click('#vhear')
+            assert waitjs(page, "window.__spoken.some(u => u.text.trim().length > 3)", 5), 'slow voice falls back to the iPhone voice'
+            page.goto(URL + '#more'); page.goto(URL + '#control'); page.wait_for_selector('#voicecard >> text=Last problem')
+            page.evaluate("window.JLN_TTS_FACTORY.run = window.__slowRun; window.JLN_TTS_LIMIT_MS = 20000; 1")
             page.evaluate("window.__natFail = false; localStorage.removeItem('fakeSR')")
             page.click('#ndevice'); page.wait_for_selector('#voicecard #nuse')
             page.screenshot(path=f'{SHOTS}/25-human-voice.png', full_page=True)
