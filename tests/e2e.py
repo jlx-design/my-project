@@ -48,6 +48,12 @@ try:
             stop() { this.stopped = true; setTimeout(() => this.onend && this.onend(), 10); } }; };
           try { Object.defineProperty(window, 'webkitSpeechRecognition', { value: undefined, configurable: true, writable: true }); window.SpeechRecognition = undefined; } catch (e) {}
           if (localStorage.getItem('fakeSR')) window.webkitSpeechRecognition = Fake(JSON.parse(localStorage.getItem('fakeSR'))); })();""")
+        ctx.add_init_script("""(() => { window.__spoken = []; window.__cancels = 0;
+          const voices = [{ name: 'Samantha', lang: 'en-US', voiceURI: 'sam', localService: true, default: true }, { name: 'Daniel (Enhanced)', lang: 'en-GB', voiceURI: 'dan', localService: true, default: false },
+            { name: 'Karen', lang: 'en-AU', voiceURI: 'kar', localService: true, default: false }, { name: 'Bubbles', lang: 'en-US', voiceURI: 'bub', localService: true, default: false }, { name: 'Thomas', lang: 'fr-FR', voiceURI: 'tho', localService: true, default: false }];
+          const fake = { getVoices: () => voices, addEventListener() {}, speak(u) { window.__spoken.push({ text: u.text, voice: u.voice && u.voice.name, rate: u.rate, pitch: u.pitch }); setTimeout(() => u.onend && u.onend(), window.__ttsDelay || 40); }, cancel() { window.__cancels++; } };
+          window.SpeechSynthesisUtterance = class { constructor(t) { this.text = t; this.voice = null; this.lang = ''; this.rate = 1; this.pitch = 1; this.volume = 1; } };
+          try { Object.defineProperty(window, 'speechSynthesis', { value: fake, configurable: true }); } catch (e) {} })();""")
         page = ctx.new_page(); PG[0] = page
         page.set_default_timeout(10000)
         errors = []
@@ -410,6 +416,59 @@ try:
             page.evaluate("localStorage.removeItem('fakeSR')"); page.reload(); page.wait_for_selector('#recbtn')
             assert page.locator('[data-vm]').count() == 0, 'no switch when the phone has no speech recognition'
         check('Instant words: text appears while speaking, keeps going after pauses, saves the text; switch to Record audio', t_instant_words)
+
+        def t_voice_personality():
+            page.goto(URL + '#control'); page.wait_for_selector('#voicecard .vrow')
+            names = page.locator('#vlist2 .vrow .title').all_inner_texts()
+            assert any('Samantha' in n for n in names) and any('Daniel' in n for n in names), names
+            assert not any('Bubbles' in n or 'Thomas' in n for n in names), 'novelty and non-English voices are hidden'
+            page.click('[data-vf="male"]'); page.wait_for_selector('[data-vf="male"].on')
+            names = page.locator('#vlist2 .vrow .title').all_inner_texts()
+            assert any('Daniel' in n for n in names) and not any('Samantha' in n for n in names), names
+            page.locator('#vlist2 .vrow', has_text='Karen').count() == 0
+            page.click('[data-vf="all"]'); page.locator('#vlist2 .vrow', has_text='Karen').locator('.vprev').click()
+            assert waitjs(page, "window.__spoken.length > 0", 5), '"window.__spoken.length > 0"'
+            assert page.evaluate("window.__spoken[window.__spoken.length-1].voice") == 'Karen', 'preview uses that voice'
+            page.locator('#vlist2 .vrow', has_text='Daniel').locator('.vpick').click()
+            page.wait_for_selector('#voicecard >> text=Voice: Daniel')
+            page.evaluate("const r = document.getElementById('vrate'); r.value = '1.2'; r.dispatchEvent(new Event('input')); r.dispatchEvent(new Event('change'))")
+            assert waitjs(page, "window.__spoken.some(u => u.voice === 'Daniel (Enhanced)' && Math.abs(u.rate - 1.2) < 0.01)", 5), '"window.__spoken.some(u => u.voice === \'Daniel (Enhanced)\' && Math.abs(u.rate - 1.2) < 0.01)"'
+            page.click('[data-pers="concise"]'); page.wait_for_selector('[data-pers="concise"].on')
+            page.click('[data-spm="always"]'); page.wait_for_selector('[data-spm="always"].on')
+            page.screenshot(path=f'{SHOTS}/21-voice-personality.png', full_page=True)
+        check('Voice & personality: male/female filter, preview, choose voice, speed, personality, speak mode', t_voice_personality)
+
+        def t_spoken_replies():
+            page.evaluate("window.__spoken = []; window.__ttsDelay = 1200; window.__cancels = 0")
+            page.goto(URL + '#chat'); page.wait_for_selector('#chat-c-in')
+            page.fill('#chat-c-in', 'Give me a quick summary'); page.keyboard.press('Enter')
+            page.wait_for_selector('#speakbar', timeout=8000)
+            said = ' '.join(page.evaluate("window.__spoken.map(u => u.text)"))
+            assert '**' not in said and 'http' not in said and '#' not in said, said
+            assert page.evaluate("window.__spoken[0].voice") == 'Daniel (Enhanced)'
+            last = gw_calls[-1]; sysmsg = json.dumps(last)
+            assert 'as few words as possible' in sysmsg, 'personality reaches the model'
+            page.click('#speakstop'); page.wait_for_selector('#speakbar', state='detached', timeout=3000)
+            assert page.evaluate('window.__cancels') >= 1
+            # When I speak: typed questions stay silent, spoken ones are answered aloud
+            page.goto(URL + '#control'); page.click('[data-spm="voice"]'); page.wait_for_selector('[data-spm="voice"].on')
+            page.evaluate("window.__spoken = []")
+            page.goto(URL + '#chat'); page.wait_for_selector('#chat-c-in')
+            page.fill('#chat-c-in', 'Typed question'); page.keyboard.press('Enter')
+            assert waitjs(page, "document.querySelectorAll('.msg.assistant').length > 0", 5), '"document.querySelectorAll(\'.msg.assistant\').length > 0"'; time.sleep(1.5)
+            assert page.evaluate('window.__spoken.length') == 0, 'typed question was spoken'
+            page.evaluate("""localStorage.setItem('fakeSR', JSON.stringify([{t:'What is on my list today', f:true, end:true}]))"""); page.reload(); page.wait_for_selector('#chat-c-in')
+            page.evaluate("window.__spoken = []; window.__ttsDelay = 3000; window.__cancels = 0")
+            page.click('[data-dictate]'); assert waitjs(page, "document.getElementById('chat-c-in').value.includes('my list today')", 4.0), '"document.getElementById(\'chat-c-in\').value.includes(\'my list today\')"'
+            page.keyboard.press('Escape'); page.click('#chat-c .send-btn')
+            page.wait_for_selector('#speakbar', timeout=8000)
+            assert 'spoken sentences' in json.dumps(gw_calls[-1]) or 'read aloud' in json.dumps(gw_calls[-1]), 'model told the reply will be heard'
+            page.click('[data-dictate]')   # cut in while it is speaking
+            page.wait_for_selector('#speakbar', state='detached', timeout=3000)
+            assert page.evaluate('window.__cancels') >= 1
+            page.evaluate("localStorage.removeItem('fakeSR'); window.__ttsDelay = 40")
+            page.goto(URL + '#control'); page.click('[data-spm="off"]')
+        check('Spoken replies: clean speech, chosen voice, Stop, only when I speak, cut in by tapping the mic', t_spoken_replies)
 
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]
