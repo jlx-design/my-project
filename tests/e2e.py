@@ -602,6 +602,32 @@ try:
             page.screenshot(path=f'{SHOTS}/25-human-voice.png', full_page=True)
         check('Human-like voice: download, choose (e.g. George), conversation spoken in it, Stop, fallback to iPhone voice', t_human_voice)
 
+        def t_fast_mode():
+            fac = """window.__reqs = []; window.__deleted = []; window.JLN_LLM_FACTORY = { prebuiltAppConfig: { model_list: [{ model_id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', vram_required_MB: 879 }, { model_id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', vram_required_MB: 400 }] },
+              CreateMLCEngine: async (id, o) => { window.__loaded = id; o.initProgressCallback({ progress: 1, text: 'done' }); return { chat: { completions: { create: async (req) => { window.__reqs.push(req); return (async function* () { for (const w of ['Sure. ', 'Start with the bank form.']) yield { choices: [{ delta: { content: w } }] }; })(); } } }, interruptGenerate() {}, unload: async () => { window.__unloaded = (window.__unloaded || 0) + 1; } }; },
+              deleteModelAllInfoInCache: async (id) => { window.__deleted.push(id); } };"""
+            page.goto(URL + '#control'); page.wait_for_selector('#localai'); page.evaluate(fac)
+            if page.locator('#localai #lstd').count(): page.click('#lstd'); page.wait_for_selector('#localai >> text=Installed', timeout=10000)
+            page.fill('#ctok', ''); page.click('#csavegw'); page.wait_for_selector('text=Saved')
+            page.evaluate("localStorage.setItem('fakeSR', JSON.stringify([{t:'What should I do first', f:true, end:true},{t:'And after that', f:true, end:true}]))")
+            page.goto(URL + '#evolve'); page.reload(); page.evaluate(fac); page.wait_for_selector('#c-fast-go')
+            page.evaluate("window.JLN_END_SILENCE_MS = 300; window.JLN_NO_SPEECH_MS = 2000; window.__spoken = []; window.__ttsDelay = 100")
+            page.click('#c-orb')
+            assert waitjs(page, "window.__reqs.length >= 2", 15), 'two spoken turns answered'
+            r = page.evaluate('window.__reqs')
+            assert r[0]['max_tokens'] <= 120 and len(r[0]['messages'][0]['content']) < 900, 'short prompt and short answers when talking'
+            assert r[0]['messages'][0]['content'] == r[1]['messages'][0]['content'], 'same beginning every turn so the phone can reuse it'
+            assert waitjs(page, "window.__spoken.some(u => /bank form/.test(u.text))", 5), 'spoken in the iPhone voice'
+            page.click('#c-end'); page.evaluate("localStorage.removeItem('fakeSR')")
+            # one tap to the Fast AI; the Standard one is removed afterwards
+            page.click('#c-fast-go'); page.wait_for_selector('text=Fast AI is ready', timeout=10000)
+            assert page.evaluate('window.__loaded').startswith('Qwen2.5-0.5B'), page.evaluate('window.__loaded')
+            assert any('Llama-3.2-1B' in d for d in page.evaluate('window.__deleted')), 'old model removed'
+            assert page.locator('#c-fast-go').count() == 0
+            page.goto(URL + '#control'); page.fill('#ctok', 'secret-123'); page.click('#csavegw'); page.wait_for_selector('text=Saved')
+            page.click('#lremove'); page.wait_for_selector('#localai #lstd')
+        check('Fast mode: short stable prompt reused across turns, short spoken answers, one tap to the Fast AI', t_fast_mode)
+
         def t_companion_fallback():
             # the iPhone refuses its speech recognition in Home Screen apps -> microphone + voice detection + on-phone speech-to-text
             page.goto(URL + '#control'); page.wait_for_selector('#localvoice')

@@ -408,3 +408,4 @@ html[data-route="evolve"] .nav a { color: #8d9bb5; } html[data-route="evolve"] .
 .companion { background: radial-gradient(70% 42% at 50% 44%, #0f1c3a 0%, rgba(8, 12, 24, .6) 55%, transparent 100%); }
 .natural .list { margin-top: 4px; } .natural h3 .tag { margin-left: 6px; vertical-align: middle; }
 .c-times { margin: 8px 0 0; font-size: var(--t-xs); color: #5f708c; } .c-times:empty { display: none; }
+.c-fast { width: min(560px, calc(100% - 32px)); margin: 0 auto; padding: 12px 14px; border-radius: 14px; background: rgba(120, 160, 255, .08); border: 1px solid rgba(150, 180, 240, .16); color: #c9d6ee; font-size: var(--t-s); text-align: center; position: absolute; left: 50%; transform: translateX(-50%); bottom: 150px; z-index: 2; }
