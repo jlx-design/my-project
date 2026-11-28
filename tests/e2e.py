@@ -436,12 +436,18 @@ try:
             assert page.evaluate('window.__srStarts') >= 2, 'restarts after the phone stops listening'
             assert page.evaluate('window.__srLang') == 'en-GB'
             page.screenshot(path=f'{SHOTS}/20-instant-words.png')
+            expect(page.locator('#pausebtn')).to_be_enabled(); page.click('#pausebtn')
+            expect(page.locator('#rtime')).to_contain_text('Paused'); n = page.evaluate('window.__srStarts'); page.wait_for_timeout(1200)
+            assert page.evaluate('window.__srStarts') == n, 'paused: the phone stops listening and does not restart by itself'
+            t1 = page.inner_text('#rtime'); page.wait_for_timeout(1100); assert page.inner_text('#rtime') == t1, 'timer stops while paused'
+            page.click('#pausebtn'); assert waitjs(page, f'window.__srStarts > {n}', 3), 'resume listens again'
+            expect(page.locator('#pausebtn')).to_have_attribute('aria-label', 'Pause')
             page.click('#recbtn'); page.wait_for_selector('#vlist >> text=Remind me to call Ama about the venue', timeout=5000)
             page.click('[data-vm="record"]'); expect(page.locator('[data-vm="record"]')).to_have_class(re.compile('on'))
             page.wait_for_selector('text=Record audio: saves the sound')
             page.evaluate("localStorage.removeItem('fakeSR')"); page.reload(); page.wait_for_selector('#recbtn')
             assert page.locator('[data-vm]').count() == 0, 'no switch when the phone has no speech recognition'
-        check('Instant words: text appears while speaking, keeps going after pauses, saves the text; switch to Record audio', t_instant_words)
+        check('Instant words: text appears while speaking, keeps going after pauses, Pause really pauses and Resume continues, saves the text; switch to Record audio', t_instant_words)
 
         def t_voice_personality():
             page.goto(URL + '#control'); page.wait_for_selector('#voicecard .vrow')
