@@ -80,7 +80,7 @@ try:
         page.goto(URL + '#home'); page.wait_for_selector('h1')
 
         def t_home():
-            expect(page.locator('h1')).to_contain_text('Joshua')
+            expect(page.locator('h1')).to_contain_text('Boss')
             assert page.evaluate("document.documentElement.dataset.theme") in ('daylight','graphite'), 'theme not applied'
             expect(page.locator('[data-status]').first).to_contain_text('ONLINE')
             expect(page.locator('#nav a')).to_have_count(9)
@@ -108,6 +108,32 @@ try:
             page.wait_for_selector('text=Briefing for')
             expect(page.locator('.msg.assistant').last).to_contain_text('Calendar is not connected')
         check('Commands that work without AI: task, remember, note, brief me', t_local_cmds)
+
+        def t_voice_cmds():
+            run = lambda q: page.evaluate("q => JLN.localCommand(q)", q)
+            page.goto(URL + '#home'); page.wait_for_selector('h1')
+            assert 'Boss' in page.inner_text('h1'), 'greets the owner as Boss'
+            r = run('Hey Evolve, can you please take a note that the Accra office lease ends in March'); assert 'Boss' in r and 'Saved to your Vault' in r, r
+            notes = page.evaluate("JLN.Store.all('notes')"); assert any(n['body'].startswith('The Accra office lease ends in March') for n in notes), 'note saved without the filler words'
+            assert 'What should the note say' in run('take a note'); r = run('Buy printer ink and paper'); assert 'Saved to your Vault' in r, r
+            r = run('what did I note about the office lease'); assert 'lease ends in March' in r, r
+            r = run('write an email to Kofi about the website launch'); assert 'drafted the email' in r and 'Kofi' in r and 'Approvals' in r and 'won’t send' in r, r
+            d = [x for x in page.evaluate("JLN.Store.all('drafts')") if x.get('source') == 'voice']; assert d and d[-1]['status'] == 'draft' and d[-1]['subject'] == 'Website launch' and d[-1]['body'].startswith('Dear Kofi'), d
+            page.evaluate("JLN.Store.put('memories', { id: 'm-ama', layer: 'core', content: 'Ama Mensah is our accountant, ama@mensah.example', source: 'user', status: 'verified' })")
+            r = run("reply to Ama's email saying I will send the receipts on Friday"); assert 'reply' in r and 'can’t read your inbox' in r, r
+            d = sorted([x for x in page.evaluate("JLN.Store.all('drafts')") if x.get('source') == 'voice'], key=lambda x: x['updated_at'])[-1]
+            assert d['to'] == 'ama@mensah.example' and d['subject'].startswith('Re: ') and 'I will send the receipts on Friday.' in d['body'], d
+            assert 'What would you like to say to Yaw' in run('reply to Yaw'); r = run('Thanks, the proposal looks good'); assert 'drafted the reply' in r, r
+            n = len(page.evaluate("JLN.Store.all('drafts')")); assert 'removed that draft' in run('undo that'); assert len(page.evaluate("JLN.Store.all('drafts')")) == n - 1
+            assert 'don’t send anything myself' in run('send it')
+            assert 'can’t read your inbox' in run('check my emails')
+            assert 'waiting' in run("what's waiting for my approval")
+            assert 'Done, Boss. Added to your tasks' in run('remind me to call the bank tomorrow at 10am')
+            assert run('what time is it').startswith('It’s')
+            assert 'Sure thing, Chief' in run('call me Chief'); assert 'Chief' in run('take a note: test'); run('call me Boss')
+            assert run('What is the capital of Ghana?') is None, 'ordinary questions still go to the AI'
+            page.goto(URL + '#chat'); page.wait_for_selector('#chat-c-in')
+        check('Voice commands: calls the owner Boss; notes, email drafts, replies, follow-up questions, undo, honest about sending and the inbox', t_voice_cmds)
 
         def t_no_ai():
             page.fill('#chat-c-in', 'Plan my week'); page.keyboard.press('Enter')
@@ -203,7 +229,7 @@ try:
             page.fill('#chat-c-in', 'Explain how VAT works in Ghana'); page.keyboard.press('Enter')
             page.wait_for_selector('text=will answer automatically', timeout=5000)
             page.fill('#chat-c-in', 'write a formal letter to the bank manager about my October statement'); page.keyboard.press('Enter')
-            page.wait_for_selector('text=prepared a letter template', timeout=5000)
+            page.wait_for_selector('text=drafted the letter', timeout=5000)
             page.fill('#chat-c-in', 'plan my day'); page.keyboard.press('Enter'); page.wait_for_selector('text=A plan for the rest of today')
             page.fill('#chat-c-in', 'task: Buy airtime'); page.keyboard.press('Enter'); page.wait_for_selector('text=Added to your tasks')
             page.screenshot(path=f'{SHOTS}/07-offline-chat.png', full_page=True)
