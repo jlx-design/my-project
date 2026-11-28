@@ -2,7 +2,7 @@
    Sections: utils · store · activity log · settings · AI providers · orchestrator · views · router */
 (() => {
 'use strict';
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 
 /* ---------- utils ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -25,9 +25,9 @@ function sheet(html, onMount) {
   const back = document.createElement('div'); back.className = 'sheet-back';
   back.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
   const onKey = (e) => { if (e.key === 'Escape') close(); };
-  const close = () => { back.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); };
+  const close = () => { back.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('jln:route', close); };
   back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('[data-close]')) close(); });
-  document.addEventListener('keydown', onKey); window.addEventListener('hashchange', close);
+  document.addEventListener('keydown', onKey); window.addEventListener('jln:route', close);
   document.body.appendChild(back);
   onMount && onMount(back.firstElementChild, close);
   return close;
@@ -314,7 +314,7 @@ function bindLocalCard(rerender) {
   const b = (id, fn) => { const x = $(id); if (x) x.onclick = fn; };
   b('#lstd', () => installLocal('standard', ui)); b('#llite', () => installLocal('lite', ui));
   b('#lremove', async () => { await removeLocal(); toast('On-device AI removed'); renderStatus(); rerender(); });
-  b('#ltest', () => { activeConv = null; location.hash = 'chat'; setTimeout(() => sendMessage('Say hello in one short sentence and tell me one thing you can help me with offline.', null, { forceLocal: true }), 50); });
+  b('#ltest', () => { activeConv = null; go('chat'); setTimeout(() => sendMessage('Say hello in one short sentence and tell me one thing you can help me with offline.', null, { forceLocal: true }), 50); });
 }
 
 /* ---------- On-device voice-to-text (Whisper in a worker): free, private, offline once downloaded ---------- */
@@ -323,7 +323,7 @@ const Asr = { worker: null, seq: 0, wait: new Map(), prog: null, chain: Promise.
 function asrClient() {
   if (window.JLN_ASR_FACTORY) return window.JLN_ASR_FACTORY;
   if (!Asr.worker) {
-    Asr.worker = new Worker('asr.js?v=1.3.0', { type: 'module' });
+    Asr.worker = new Worker('asr.js?v=1.3.1', { type: 'module' });
     Asr.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Asr.onprog && Asr.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Asr.wait.get(m.id); if (!w) return; Asr.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'asr_failed'), { code: 'asr_failed' })); };
     Asr.worker.onerror = (e) => { for (const w of Asr.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'worker error'), { code: 'asr_failed' })); Asr.wait.clear(); Asr.worker = null; };
   }
@@ -379,7 +379,7 @@ const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.compose';
 const gmailRedirect = () => location.origin + '/';
 const gmailConnected = () => !!S.gmailToken && Date.now() < (S.gmailExp || 0) - 60000;
 async function gmailSignIn(pendingDraftId) {
-  if (!S.googleClientId) { toast('Add your Google Client ID in Control Centre → Gmail first'); location.hash = 'control'; return; }
+  if (!S.googleClientId) { toast('Add your Google Client ID in Control Centre → Gmail first'); go('control'); return; }
   const state = uid() + uid();
   await setSetting('gAuthState', state); await setSetting('gPending', pendingDraftId || '');
   const q = new URLSearchParams({ client_id: S.googleClientId, redirect_uri: gmailRedirect(), response_type: 'token', scope: GMAIL_SCOPE, state, include_granted_scopes: 'true' });
@@ -994,7 +994,7 @@ const Natural = { worker: null, seq: 0, wait: new Map(), prog: null, onprog: nul
 function naturalClient() {
   if (window.JLN_TTS_FACTORY) return window.JLN_TTS_FACTORY;
   if (!Natural.worker) {
-    Natural.worker = new Worker('tts.js?v=1.3.0', { type: 'module' });
+    Natural.worker = new Worker('tts.js?v=1.3.1', { type: 'module' });
     Natural.worker.onmessage = (e) => { const m = e.data || {}; if (m.type === 'progress') { Natural.onprog && Natural.onprog(m.total ? m.loaded / m.total : 0, m.total); return; } const w = Natural.wait.get(m.id); if (!w) return; Natural.wait.delete(m.id); m.ok ? w.res(m) : w.rej(Object.assign(new Error(m.error || 'tts_failed'), { code: 'tts_failed' })); };
     Natural.worker.onerror = (e) => { for (const w of Natural.wait.values()) w.rej(Object.assign(new Error((e && e.message) || 'voice worker error'), { code: 'tts_failed' })); Natural.wait.clear(); Natural.worker = null; };
   }
@@ -1494,7 +1494,7 @@ async function companionHistory() {
   const msgs = await Store.all('messages');
   sheet(`<h2>History</h2><p class="muted" style="margin-top:-6px">Everything you and Evolve said, newest first. Long answers, letters and tables are easier to read here.</p>
     <div class="list">${convs.map((c) => { const n = msgs.filter((m) => m.conv === c.id).length; return `<button class="item" data-cv="${c.id}" style="width:100%;border:0;background:none;text-align:left;cursor:pointer"><div class="grow"><div class="title">${esc(c.title || 'Conversation')}</div><div class="meta">${n} message${n === 1 ? '' : 's'}${c.updated_at ? ', ' + fmtDate(c.updated_at) : ''}</div></div>${icon('chev', 14)}</button>`; }).join('') || '<div class="empty">Nothing yet. Tap the orb and talk.</div>'}</div>`, (el, close) => {
-    $$('[data-cv]', el).forEach((b) => b.onclick = () => { activeConv = b.dataset.cv; close(); location.hash = 'chat'; });
+    $$('[data-cv]', el).forEach((b) => b.onclick = () => { activeConv = b.dataset.cv; close(); go('chat'); });
   });
 }
 
@@ -1579,8 +1579,8 @@ function bindDictation(btn, target, onChange) {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Cap.claude.dictation && !SR) { btn.onclick = () => toast('Dictation isn’t available in this browser. Use your keyboard’s microphone, or the Voice tab to record.'); return; }
   let rec = null, live = false; const stopLive = () => { if (live) OrbHub.listen(false); live = false; btn.classList.remove('live'); };
-  const onLeave = () => { if (live) { if (Cap.claude.dictation) { try { Cap.claude.dictation.stop(); } catch {} } else { try { rec && rec.stop(); } catch {} } stopLive(); } window.removeEventListener('hashchange', onLeave); };
-  window.addEventListener('hashchange', onLeave); const base = () => target.value; const set = (v) => { target.value = v; Talk.pendingVoice = true; onChange && onChange(); };
+  const onLeave = () => { if (live) { if (Cap.claude.dictation) { try { Cap.claude.dictation.stop(); } catch {} } else { try { rec && rec.stop(); } catch {} } stopLive(); } window.removeEventListener('jln:route', onLeave); };
+  window.addEventListener('jln:route', onLeave); const base = () => target.value; const set = (v) => { target.value = v; Talk.pendingVoice = true; onChange && onChange(); };
   btn.onclick = () => {
     if (Speaker.speaking) Speaker.stop(); // cut in: stop talking and listen
     if (live) { stopLive(); if (Cap.claude.dictation) Cap.claude.dictation.stop(); else rec && rec.stop(); return; }
@@ -1650,10 +1650,10 @@ async function renderHome() {
     ${convs.filter((c) => c.title !== 'New conversation').length ? `<div class="section"><div class="section-head"><h2>Recent conversations</h2><a href="#chat">Open chat</a></div><div class="list">${convs.filter((c) => c.title !== 'New conversation').slice(0, 3).map((c) => `<a class="item" href="#chat" data-conv="${c.id}"><span class="glyph g-chat">${icon('chat')}</span><div class="grow"><div class="title">${esc(c.title)}</div><div class="meta">${fmtDate(c.updated_at)}</div></div></a>`).join('')}</div></div>` : ''}
     ${notes.length ? `<div class="section"><div class="section-head"><h2>Recent in your Vault</h2><a href="#vault">Open Vault</a></div><div class="list">${notes.slice(0, 3).map((n) => `<a class="item" href="#vault"><span class="glyph g-vault">${icon('vault')}</span><div class="grow"><div class="title">${esc(n.title)}</div><div class="meta">${n.kind === 'file' ? 'File, ' : ''}${fmtDate(n.updated_at)}</div></div></a>`).join('')}</div></div>` : ''}`;
   bindConnectCard(renderHome);
-  $('#qa-rec').onclick = () => { location.hash = 'voice'; if (navigator.mediaDevices && window.MediaRecorder && !inArtifact) startRecording(); };
+  $('#qa-rec').onclick = () => { go('voice'); if (navigator.mediaDevices && window.MediaRecorder && !inArtifact) startRecording(); };
   $('#qa-task').onclick = () => editTask(null, renderHome);
-  $('#qa-write').onclick = () => { companionStart('I want to write a formal letter. Ask me who it is to and what it is about.'); location.hash = 'evolve'; };
-  $('#qa-brief').onclick = () => { companionStart('Brief me on my day.'); location.hash = 'evolve'; };
+  $('#qa-write').onclick = () => { companionStart('I want to write a formal letter. Ask me who it is to and what it is about.'); go('evolve'); };
+  $('#qa-brief').onclick = () => { companionStart('Brief me on my day.'); go('evolve'); };
   $$('[data-conv]').forEach((a) => a.onclick = () => { activeConv = a.dataset.conv; });
   bindTaskRows(view(), renderHome);
 }
@@ -2232,7 +2232,20 @@ async function route() {
   await renderNav(ROUTES[r] ? r : 'evolve'); await fn(); renderStatus();
   const m = $('#view'); if (m) m.focus({ preventScroll: true });
 }
-window.addEventListener('hashchange', () => { window.scrollTo(0, 0); route(); });
+// Screens switch with history.pushState instead of changing location.hash: in a Home Screen web app iPhone
+// treats every hash navigation as leaving the page, stops the microphone and asks for permission again.
+function go(name) {
+  const h = '#' + name;
+  if (location.hash !== h) { try { history.pushState(null, '', h); } catch { location.hash = name; return; } }
+  window.dispatchEvent(new Event('jln:route')); window.scrollTo(0, 0); route();
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="#"]'); if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
+  const name = a.getAttribute('href').slice(1); if (!ROUTES[name]) return;
+  e.preventDefault(); go(name);
+});
+window.addEventListener('popstate', () => { window.dispatchEvent(new Event('jln:route')); window.scrollTo(0, 0); route(); });
+window.addEventListener('hashchange', () => { window.dispatchEvent(new Event('jln:route')); window.scrollTo(0, 0); route(); });
 
 /* ---------- boot ---------- */
 async function boot() {

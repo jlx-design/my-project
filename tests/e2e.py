@@ -651,6 +651,17 @@ try:
         check('Natural voices: robotic basic voices explained; a downloaded Premium/Enhanced version is used automatically', t_natural_voice)
 
 
+        def t_no_hash_navigation():
+            # iPhone forgets the microphone permission on every hash navigation in Home Screen apps; screens must switch without one
+            page.goto(URL + '#evolve'); page.wait_for_selector('#c-orb')
+            page.evaluate("window.__hc = 0; window.addEventListener('hashchange', () => window.__hc++)")
+            for name, sel in [('tasks', '#nav a[href="#tasks"]'), ('home', '#nav a[href="#home"]'), ('voice', '#nav a[href="#voice"]'), ('evolve', '#nav a[href="#evolve"]')]:
+                page.click(sel); assert waitjs(page, f"location.hash === '#{name}'", 3), name
+            page.click('#nav a[href="#home"]'); page.click('.orb-card'); page.wait_for_selector('#c-orb')
+            assert page.evaluate('window.__hc') == 0, 'no hash navigations when moving between screens'
+            page.go_back(); page.wait_for_selector('.orb-card')   # back button still works
+        check('Moving between screens never triggers a hash navigation (keeps the iPhone microphone permission)', t_no_hash_navigation)
+
         def t_errors():
             bad = [e for e in errors if 'gw.test' not in e and 'Failed to load resource' not in e]
             assert not bad, 'console errors: ' + ' | '.join(bad[:5])
